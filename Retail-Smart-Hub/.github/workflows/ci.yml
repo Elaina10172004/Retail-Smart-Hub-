@@ -1,0 +1,49 @@
+﻿name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Clean install
+        run: npm run install:clean
+
+      - name: Install Python agent dependencies
+        run: npm run python:deps:install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: AI Python Freeze Guard
+        run: npm run guard:ai-python-first
+
+      - name: Test metadata
+        run: npm run test:server && npm run test:web
+
+      - name: Python agent tests
+        run: npm run test:python-agent
+
+      - name: Build
+        run: npm run build
+
+      - name: Release Preflight
+        run: npm run preflight:release

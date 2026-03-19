@@ -1,0 +1,62 @@
+﻿# dependencies
+node_modules/
+
+# build outputs
+dist/
+dist-server/
+build/
+release/
+artifacts/
+coverage/
+
+# runtime data and local state
+database/*.db
+database/*.db-shm
+database/*.db-wal
+database/**/*.db
+database/**/*.db-shm
+database/**/*.db-wal
+database/rag/
+database/**/*.jsonl
+server/database/*.db
+server/database/*.db-shm
+server/database/*.db-wal
+server/database/**/*.db
+server/database/**/*.db-shm
+server/database/**/*.db-wal
+
+# runtime bootstrap secrets and python-sidecar state
+bootstrap-admin-password.txt
+python-agent/database/
+
+# env / secrets
+.env*
+!.env.example
+key.txt
+*.pem
+*.key
+*.p12
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp-*.log
+.tmp/
+.tmp-watch-test/
+
+# python agent
+python-agent/.venv/
+python-agent/venv/
+python-agent/__pycache__/
+python-agent/**/*.pyc
+
+# system files
+.DS_Store
+Thumbs.db
+.vs/
+.vscode/
+
+# electron diagnostics
+*.asar.unpacked/

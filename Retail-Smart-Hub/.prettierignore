@@ -1,0 +1,9 @@
+﻿node_modules
+dist
+dist-server
+release
+coverage
+database/*.db
+database/*.db-shm
+database/*.db-wal
+package-lock.json

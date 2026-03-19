@@ -1,0 +1,17 @@
+{
+  "name": "Retail Smart Hub",
+  "short_name": "Smart Hub",
+  "description": "零售百货物流信息系统",
+  "display": "standalone",
+  "start_url": "/",
+  "background_color": "#f4efe6",
+  "theme_color": "#1f5eff",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "rules-security",
+    "query": "系统的登录失败限制和密码策略是什么",
+    "expectedDocIds": ["security-rules"],
+    "expectedKeywords": ["登录失败", "密码"]
+  },
+  {
+    "id": "api-catalog",
+    "query": "接口清单里客户模块有哪些接口",
+    "expectedDocIds": ["api-catalog"],
+    "expectedKeywords": ["客户", "接口"]
+  },
+  {
+    "id": "db-core",
+    "query": "数据库核心表有哪些，订单表结构怎么查",
+    "expectedDocIds": ["db-structure"],
+    "expectedKeywords": ["核心表", "订单"]
+  },
+  {
+    "id": "report-definition",
+    "query": "报表口径里毛利润和销售额的定义",
+    "expectedDocIds": ["report-definitions"],
+    "expectedKeywords": ["毛利润", "销售额"]
+  },
+  {
+    "id": "project-progress",
+    "query": "当前第二阶段还有哪些任务",
+    "expectedDocIds": ["progress"],
+    "expectedKeywords": ["阶段", "任务"]
+  }
+]

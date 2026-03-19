@@ -1,0 +1,80 @@
+name: release-pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  validate-clean-install:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Clean Install
+        run: npm run install:clean
+
+      - name: Install Python agent dependencies
+        run: npm run python:deps:install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: AI Python Freeze Guard
+        run: npm run guard:ai-python-first
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Release Preflight
+        run: npm run preflight:release
+
+  package-windows:
+    runs-on: windows-latest
+    needs: validate-clean-install
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build Release Artifacts
+        run: npm run release:ci
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-windows
+          path: artifacts/**
+          if-no-files-found: error

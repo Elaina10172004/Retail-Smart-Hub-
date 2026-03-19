@@ -1,0 +1,3 @@
+orderNo,customerName,orderChannel,expectedDeliveryDate,remark,sku,productName,quantity,unitPrice
+IMP-ORDER-001,朝阳社区店,门店补货,2026-03-20,首批测试订单,SKU-1001,维达抽纸,2,12.80
+IMP-ORDER-001,朝阳社区店,门店补货,2026-03-20,首批测试订单,SKU-1002,农夫山泉,1,36.00
