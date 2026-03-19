@@ -1,8 +1,6 @@
 # Retail Smart Hub
 
-Retail Smart Hub 是一个面向零售、仓储和物流场景的桌面端系统。
-
-本仓库根目录用于交付，真正的应用代码都在 [`Retail-Smart-Hub/`](./Retail-Smart-Hub) 中。
+Retail Smart Hub 是一个面向零售、仓储和物流场景的带有ai助手的桌面端系统。
 
 ## 仓库结构
 
@@ -48,13 +46,11 @@ cd Retail-Smart-Hub
 npm ci
 ```
 
-复制环境变量文件（可选，想改启动默认值时再配）：
+复制环境变量文件：
 
 ```bash
 copy .env.example .env
 ```
-
-如果你希望一开始就固定默认模型、Python Agent 或 Embedding 运行参数，再补齐 `.env` 中对应配置。AI 模型的 API Key 也可以后续在系统内“配置管理”里直接填写。
 
 启动开发服务：
 
@@ -95,7 +91,3 @@ npm run desktop:build
 - 带审批的受控写操作
 - 记忆采集与审计接入
 
-## 说明
-
-- 仓库保留 `docs/rag/knowledge/` 作为业务知识库。
-- 开发文档和内部草稿不纳入提交内容。
