@@ -3,12 +3,15 @@ import { currentDateString } from '../../shared/format';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
 import { allocateOutboundFromShelves } from '../inventory/inventory-shelf.service';
 
-export type ShippingStatus = '待发货' | '已发货';
+export type ShippingStatus = '待发货' | '部分发货' | '已发货';
 export type ShipmentStockStatus = '库存充足' | '待补货' | '-';
 
 export interface ShippingRecord {
   id: string;
   orderId: string;
+  orderIds: string[];
+  orderCount: number;
+  documentScope: '单订单' | '合并发货';
   customer: string;
   items: number;
   status: ShippingStatus;
@@ -20,10 +23,12 @@ export interface ShippingRecord {
 
 export interface ShippingDetailRecord extends ShippingRecord {
   orderChannel: string;
+  orderChannels: string[];
   createdAt: string;
   shippedAt?: string;
   remark?: string;
   itemsDetail: Array<{
+    orderId: string;
     sku: string;
     productName: string;
     quantity: number;
@@ -150,6 +155,9 @@ function toShippingRecord(row: ShipmentRow): ShippingRecord {
   return {
     id: row.id,
     orderId: row.orderId,
+    orderIds: [row.orderId],
+    orderCount: 1,
+    documentScope: '单订单',
     customer: row.customer,
     items: row.items,
     status: row.status,
@@ -184,10 +192,14 @@ export function getShipmentDetail(deliveryId: string): ShippingDetailRecord | nu
   return {
     ...record,
     orderChannel: shipment.orderChannel,
+    orderChannels: [shipment.orderChannel],
     createdAt: shipment.createdAt,
     shippedAt: shipment.shippedAt ?? undefined,
     remark: shipment.remark ?? undefined,
-    itemsDetail: items,
+    itemsDetail: items.map((item) => ({
+      orderId: shipment.orderId,
+      ...item,
+    })),
   };
 }
 

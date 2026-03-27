@@ -647,6 +647,7 @@ export function OrderManagement() {
               <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">所有状态</option>
                 <option value="待发货">待发货</option>
+                <option value="部分发货">部分发货</option>
                 <option value="已发货">已发货</option>
                 <option value="已完成">已完成</option>
                 <option value="已取消">已取消</option>
@@ -682,7 +683,7 @@ export function OrderManagement() {
                   <TableCell className="text-gray-500">{order.date}</TableCell>
                   <TableCell className="font-semibold text-gray-900">{order.amount}</TableCell>
                   <TableCell>
-                    <Badge variant={order.status === '待发货' ? 'default' : order.status === '已发货' ? 'secondary' : order.status === '已完成' ? 'success' : 'outline'}>
+                    <Badge variant={order.status === '待发货' ? 'default' : order.status === '部分发货' ? 'warning' : order.status === '已发货' ? 'secondary' : order.status === '已完成' ? 'success' : 'outline'}>
                       {order.status}
                     </Badge>
                   </TableCell>

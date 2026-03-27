@@ -1,4 +1,4 @@
-﻿export type OrderStatus = '待发货' | '已发货' | '已完成' | '已取消';
+export type OrderStatus = '待发货' | '部分发货' | '已发货' | '已完成' | '已取消';
 export type StockStatus = '库存充足' | '部分缺货' | '待校验' | '-';
 
 export interface OrderRecord {

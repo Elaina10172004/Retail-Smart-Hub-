@@ -3,11 +3,12 @@ import { currentDateString, currentDateTimeString, formatCurrency } from '../../
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
 import { ensureCustomerProfiles } from '../../database/db';
 
-export type OrderStatus = '待发货' | '已发货' | '已完成' | '已取消';
+export type OrderStatus = '待发货' | '部分发货' | '已发货' | '已完成' | '已取消';
 export type StockStatus = '库存充足' | '部分缺货' | '待校验' | '-';
 export type OrderStatusUpdate = '已完成' | '已取消';
 
 const ORDER_STATUS_PENDING: OrderStatus = '待发货';
+const ORDER_STATUS_PARTIAL: OrderStatus = '部分发货';
 const ORDER_STATUS_SHIPPED: OrderStatus = '已发货';
 const ORDER_STATUS_COMPLETED: OrderStatus = '已完成';
 const ORDER_STATUS_CANCELLED: OrderStatus = '已取消';
@@ -564,14 +565,36 @@ export function getOrderDetail(orderId: string): OrderDetailRecord | null {
     shippedAt: string | null;
   }>(`
     SELECT
-      id as deliveryId,
-      shipment_status as shipmentStatus,
-      courier,
-      tracking_no as trackingNo,
-      shipped_at as shippedAt
-    FROM delivery_notes
-    WHERE sales_order_id = ?
+      sd.id as deliveryId,
+      sd.shipment_status as shipmentStatus,
+      sd.courier,
+      sd.tracking_no as trackingNo,
+      sd.shipped_at as shippedAt
+    FROM shipment_documents sd
+    JOIN shipment_document_orders sdo ON sdo.shipment_document_id = sd.id
+    WHERE sdo.sales_order_id = ?
+    ORDER BY COALESCE(sd.shipped_at, sd.created_at) DESC, sd.id DESC
+    LIMIT 1
   `).get(orderId);
+
+  const legacyShipping = shipping
+    ? null
+    : db.prepare<{
+        deliveryId: string;
+        shipmentStatus: string;
+        courier: string | null;
+        trackingNo: string | null;
+        shippedAt: string | null;
+      }>(`
+        SELECT
+          id as deliveryId,
+          shipment_status as shipmentStatus,
+          courier,
+          tracking_no as trackingNo,
+          shipped_at as shippedAt
+        FROM delivery_notes
+        WHERE sales_order_id = ?
+      `).get(orderId);
 
   const receivable = db.prepare<{
     receivableId: string;
@@ -604,13 +627,13 @@ export function getOrderDetail(orderId: string): OrderDetailRecord | null {
       ...item,
       lineAmount: item.quantity * item.unitPrice,
     })),
-    shipping: shipping
+    shipping: (shipping || legacyShipping)
       ? {
-          deliveryId: shipping.deliveryId,
-          shipmentStatus: shipping.shipmentStatus,
-          courier: shipping.courier ?? undefined,
-          trackingNo: shipping.trackingNo ?? undefined,
-          shippedAt: shipping.shippedAt ?? undefined,
+          deliveryId: (shipping || legacyShipping)!.deliveryId,
+          shipmentStatus: (shipping || legacyShipping)!.shipmentStatus,
+          courier: (shipping || legacyShipping)!.courier ?? undefined,
+          trackingNo: (shipping || legacyShipping)!.trackingNo ?? undefined,
+          shippedAt: (shipping || legacyShipping)!.shippedAt ?? undefined,
         }
       : undefined,
     receivable: receivable
@@ -1089,8 +1112,25 @@ export function deleteOrder(orderId: string, options?: { aggressive?: boolean })
     receivableIds.forEach((receivableId) => {
       db.prepare('DELETE FROM receipt_records WHERE receivable_id = ?').run(receivableId);
     });
+    const affectedShipmentDocumentIds = db
+      .prepare<{ shipmentDocumentId: string }>(
+        'SELECT DISTINCT shipment_document_id as shipmentDocumentId FROM shipment_document_orders WHERE sales_order_id = ?',
+      )
+      .all(orderId)
+      .map((item) => item.shipmentDocumentId);
+
     db.prepare('DELETE FROM receivables WHERE sales_order_id = ?').run(orderId);
     db.prepare('DELETE FROM stock_out_records WHERE sales_order_id = ?').run(orderId);
+    db.prepare('DELETE FROM shipment_document_items WHERE sales_order_id = ?').run(orderId);
+    db.prepare('DELETE FROM shipment_document_orders WHERE sales_order_id = ?').run(orderId);
+    affectedShipmentDocumentIds.forEach((shipmentDocumentId) => {
+      const remainingOrderCount =
+        db.prepare<{ count: number }>('SELECT COUNT(*) as count FROM shipment_document_orders WHERE shipment_document_id = ?').get(shipmentDocumentId)
+          ?.count ?? 0;
+      if (remainingOrderCount === 0) {
+        db.prepare('DELETE FROM shipment_documents WHERE id = ?').run(shipmentDocumentId);
+      }
+    });
     db.prepare('DELETE FROM delivery_notes WHERE sales_order_id = ?').run(orderId);
     db.prepare('DELETE FROM sales_order_items WHERE sales_order_id = ?').run(orderId);
     db.prepare('DELETE FROM sales_orders WHERE id = ?').run(orderId);

@@ -40,6 +40,13 @@ function shelfVariant(status: InventoryShelfOverviewRecord['status']) {
   return 'destructive';
 }
 
+function capacityBarClass(usageRate: number) {
+  if (usageRate >= 1) return 'bg-red-500';
+  if (usageRate >= 0.8) return 'bg-amber-500';
+  if (usageRate >= 0.5) return 'bg-blue-500';
+  return 'bg-emerald-500';
+}
+
 export function InventoryManagement() {
   const { user } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -299,6 +306,11 @@ export function InventoryManagement() {
                           <div><div className="text-sm font-semibold text-gray-900">{placement.shelfCode}</div><div className="mt-1 text-xs text-gray-500">{placement.shelfName} · {placement.warehouseName}</div><div className="mt-2 flex flex-wrap gap-2">{placement.tags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}</div></div>
                           <div className="text-right text-sm"><div className="font-semibold text-gray-900">数量 {placement.quantity}</div><div className="text-xs text-gray-500">容量 {placement.capacity} / 空位 {placement.remainingCapacity}</div></div>
                         </div>
+                        <div className="mt-3">
+                          <div className="h-2.5 overflow-hidden rounded-full bg-gray-100">
+                            <div className={`h-full rounded-full ${capacityBarClass((placement.capacity - placement.remainingCapacity) / Math.max(placement.capacity, 1))}`} style={{ width: `${Math.min(((placement.capacity - placement.remainingCapacity) / Math.max(placement.capacity, 1)) * 100, 100)}%` }} />
+                          </div>
+                        </div>
                       </div>
                     )) : <div className="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-500">当前商品还没有货架分布记录。</div>}
                   </div>
@@ -431,6 +443,19 @@ export function InventoryManagement() {
                   </div>
                   <div className="mt-3 text-xs text-gray-500">标签：{shelf.tags.join(' / ') || '未设置'}</div>
                   <div className="mt-1 text-xs text-gray-500">容量：{shelf.usedQuantity} / {shelf.capacity} · 空位 {shelf.remainingCapacity} · SKU {shelf.itemCount}</div>
+                  <div className="mt-3">
+                    <div className="mb-1 flex items-center justify-between text-[11px] text-gray-500">
+                      <span>容量占用图</span>
+                      <span>{formatPercent(shelf.usedQuantity / Math.max(shelf.capacity, 1))}</span>
+                    </div>
+                    <div className="relative h-3 overflow-hidden rounded-full bg-gray-100">
+                      <div className={`h-full rounded-full ${capacityBarClass(shelf.usedQuantity / Math.max(shelf.capacity, 1))}`} style={{ width: `${Math.min((shelf.usedQuantity / Math.max(shelf.capacity, 1)) * 100, 100)}%` }} />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
+                      <span>已用 {shelf.usedQuantity}</span>
+                      <span>剩余 {shelf.remainingCapacity}</span>
+                    </div>
+                  </div>
                 </div>
               )) : <div className="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-500">当前没有货架数据。</div>}
             </CardContent>

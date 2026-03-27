@@ -2,7 +2,13 @@
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
-import { dispatchShipment, getShipmentDetail, listShipments } from './shipping.service';
+import {
+  createShipmentDocument,
+  getShipmentDocumentDetail,
+  listShipmentDocuments,
+  listShippingWorkbenchCustomers,
+} from './shipping-documents.service';
+import { dispatchShipment, getShipmentDetail } from './shipping.service';
 
 export const shippingRouter = Router();
 
@@ -18,11 +24,28 @@ shippingRouter.get('/summary', requirePermission('shipping.dispatch'), (_req, re
 });
 
 shippingRouter.get('/', requirePermission('shipping.dispatch'), (_req, res) => {
-  return ok(res, listShipments());
+  return ok(res, listShipmentDocuments());
+});
+
+shippingRouter.get('/workbench', requirePermission('shipping.dispatch'), (_req, res) => {
+  return ok(res, listShippingWorkbenchCustomers());
+});
+
+shippingRouter.post('/documents', requirePermission('shipping.dispatch'), (req, res) => {
+  try {
+    const shipment = createShipmentDocument({
+      customerName: typeof req.body?.customerName === 'string' ? req.body.customerName : '',
+      remark: typeof req.body?.remark === 'string' ? req.body.remark : undefined,
+      orders: Array.isArray(req.body?.orders) ? req.body.orders : [],
+    });
+    return ok(res, shipment, '发货单已生成并完成出库。');
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Create shipment document failed');
+  }
 });
 
 shippingRouter.get('/:id', requirePermission('shipping.dispatch'), (req, res) => {
-  const detail = getShipmentDetail(req.params.id);
+  const detail = getShipmentDocumentDetail(req.params.id) || getShipmentDetail(req.params.id);
   if (!detail) {
     return fail(res, 404, 'Shipment not found');
   }

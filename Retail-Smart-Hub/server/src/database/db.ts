@@ -270,6 +270,42 @@ function initializeDatabase() {
       FOREIGN KEY (sales_order_id) REFERENCES sales_orders(id)
     );
 
+    CREATE TABLE IF NOT EXISTS shipment_documents (
+      id TEXT PRIMARY KEY,
+      customer_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      shipment_status TEXT NOT NULL,
+      document_scope TEXT NOT NULL,
+      courier TEXT,
+      tracking_no TEXT,
+      shipped_at TEXT,
+      remark TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS shipment_document_orders (
+      id TEXT PRIMARY KEY,
+      shipment_document_id TEXT NOT NULL,
+      sales_order_id TEXT NOT NULL,
+      FOREIGN KEY (shipment_document_id) REFERENCES shipment_documents(id) ON DELETE CASCADE,
+      FOREIGN KEY (sales_order_id) REFERENCES sales_orders(id) ON DELETE CASCADE,
+      UNIQUE (shipment_document_id, sales_order_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS shipment_document_items (
+      id TEXT PRIMARY KEY,
+      shipment_document_id TEXT NOT NULL,
+      sales_order_id TEXT NOT NULL,
+      sales_order_item_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      sku TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      FOREIGN KEY (shipment_document_id) REFERENCES shipment_documents(id) ON DELETE CASCADE,
+      FOREIGN KEY (sales_order_id) REFERENCES sales_orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (sales_order_item_id) REFERENCES sales_order_items(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+
     CREATE TABLE IF NOT EXISTS stock_out_records (
       id TEXT PRIMARY KEY,
       delivery_note_id TEXT NOT NULL,

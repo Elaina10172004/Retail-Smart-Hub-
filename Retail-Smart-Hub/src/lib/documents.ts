@@ -181,6 +181,7 @@ export function buildInboundDocument(detail: InboundDetailRecord): DocumentPrevi
 
 export function buildShippingDocument(detail: ShippingDetailRecord): DocumentPreviewRecord {
   const totalQuantity = detail.itemsDetail.reduce((sum, item) => sum + item.quantity, 0);
+  const hasMultipleOrders = detail.orderIds.length > 1;
 
   return {
     id: detail.id,
@@ -199,18 +200,27 @@ export function buildShippingDocument(detail: ShippingDetailRecord): DocumentPre
       { label: '订单渠道', value: detail.orderChannel },
     ],
     referenceFields: [
-      { label: '关联订单', value: detail.orderId },
+      { label: '关联订单', value: hasMultipleOrders ? detail.orderIds.join(' / ') : detail.orderId },
+      { label: '单据范围', value: detail.documentScope },
       { label: '物流公司', value: detail.courier || '-' },
       { label: '运单号', value: detail.trackingNo || '-' },
     ],
-    columns: [
-      { key: 'sku', label: 'SKU', width: '25%' },
-      { key: 'productName', label: '商品名称', width: '55%' },
-      { key: 'quantity', label: '出库数量', align: 'right', width: '20%' },
-    ],
+    columns: hasMultipleOrders
+      ? [
+          { key: 'orderId', label: '订单号', width: '24%' },
+          { key: 'sku', label: 'SKU', width: '20%' },
+          { key: 'productName', label: '商品名称', width: '40%' },
+          { key: 'quantity', label: '出库数量', align: 'right', width: '16%' },
+        ]
+      : [
+          { key: 'sku', label: 'SKU', width: '25%' },
+          { key: 'productName', label: '商品名称', width: '55%' },
+          { key: 'quantity', label: '出库数量', align: 'right', width: '20%' },
+        ],
     rows: detail.itemsDetail.map((item) => ({
-      id: `${detail.id}-${item.sku}`,
+      id: `${detail.id}-${item.orderId}-${item.sku}`,
       values: {
+        orderId: item.orderId,
         sku: item.sku,
         productName: item.productName,
         quantity: formatQuantity(item.quantity),
