@@ -3,8 +3,10 @@ import { requirePermission } from '../../shared/auth';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { fail, ok } from '../../shared/response';
 import {
+  createProcurementOrder,
   deleteProcurementOrder,
   generateSuggestedPurchaseOrders,
+  getProcurementFormOptions,
   getProcurementOrderDetail,
   getProcurementSuggestions,
   listProcurementOrders,
@@ -28,8 +30,21 @@ procurementRouter.get('/suggestions', requirePermission('procurement.manage'), (
   return ok(res, getProcurementSuggestions());
 });
 
+procurementRouter.get('/form-options', requirePermission('procurement.manage'), (_req, res) => {
+  return ok(res, getProcurementFormOptions());
+});
+
 procurementRouter.get('/', requirePermission('procurement.manage'), (_req, res) => {
   return ok(res, listProcurementOrders());
+});
+
+procurementRouter.post('/', requirePermission('procurement.manage'), (req, res) => {
+  try {
+    const detail = createProcurementOrder(req.body);
+    return ok(res, detail, '采购单已创建。');
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Create procurement order failed');
+  }
 });
 
 procurementRouter.get('/:id', requirePermission('procurement.manage'), (req, res) => {

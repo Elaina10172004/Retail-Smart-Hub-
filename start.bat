@@ -62,6 +62,18 @@ if /I "%~1"=="--rebuild" (
   set "REBUILD_MODE=1"
   set "AUTO_SELECT_MODE=0"
 )
+if /I "%~1"=="--build" (
+  set "REBUILD_MODE=1"
+  set "AUTO_SELECT_MODE=0"
+)
+if /I "%~1"=="-build" (
+  set "REBUILD_MODE=1"
+  set "AUTO_SELECT_MODE=0"
+)
+if /I "%~1"=="-rebuild" (
+  set "REBUILD_MODE=1"
+  set "AUTO_SELECT_MODE=0"
+)
 if /I "%~1"=="--release" (
   set "RELEASE_MODE=1"
   set "AUTO_SELECT_MODE=0"
@@ -512,6 +524,8 @@ echo   start.bat --release-ci        ^(CI release pipeline^)
 echo   start.bat --dev               ^(desktop dev shell^)
 echo   start.bat --packaged          ^(run packaged app^)
 echo   start.bat --rebuild           ^(force rebuild before local start^)
+echo   start.bat --build             ^(alias of --rebuild^)
+echo   start.bat -build              ^(alias of --rebuild^)
 echo   start.bat --install-only      ^(only check/install dependencies^)
 echo   start.bat --check             ^(check only, no install, no launch^)
 echo.

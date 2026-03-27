@@ -200,6 +200,78 @@ function registerSecureIpc(channel, handler) {
   });
 }
 
+function printDocumentHtml(html) {
+  return new Promise((resolve, reject) => {
+    const normalizedHtml = typeof html === 'string' ? html.trim() : '';
+    if (!normalizedHtml) {
+      reject(new Error('Printable html is required'));
+      return;
+    }
+
+    const printWindow = new BrowserWindow({
+      show: false,
+      width: 960,
+      height: 1320,
+      autoHideMenuBar: true,
+      backgroundColor: '#ffffff',
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    let settled = false;
+    const finish = (callback) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        if (!printWindow.isDestroyed()) {
+          printWindow.close();
+        }
+      } catch {
+        // ignore close errors
+      }
+      callback();
+    };
+
+    printWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+      writeDesktopLog(`print window failed to load: ${errorCode} ${errorDescription}`);
+      finish(() => reject(new Error(`Print window failed to load: ${errorDescription || errorCode}`)));
+    });
+
+    printWindow.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        printWindow.webContents.print(
+          {
+            printBackground: true,
+            color: true,
+            margins: {
+              marginType: 'default',
+            },
+          },
+          (success, failureReason) => {
+            if (!success) {
+              writeDesktopLog(`native print failed: ${failureReason || 'unknown error'}`);
+              finish(() => reject(new Error(failureReason || 'Print failed')));
+              return;
+            }
+
+            finish(() => resolve(true));
+          },
+        );
+      }, 60);
+    });
+
+    printWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(normalizedHtml)}`).catch((error) => {
+      writeDesktopLog(`print window loadURL failed: ${error instanceof Error ? error.message : String(error)}`);
+      finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+    });
+  });
+}
+
 function registerPermissionHandlers() {
   const defaultSession = session.defaultSession;
   if (!defaultSession) {
@@ -408,6 +480,9 @@ app.whenReady().then(async () => {
     registerSecureIpc('auth:clear-token', () => {
       writeStoredAuthToken('');
       return true;
+    });
+    registerSecureIpc('documents:print-html', async (_event, html) => {
+      return printDocumentHtml(html);
     });
 
     writeDesktopLog('electron app is ready');

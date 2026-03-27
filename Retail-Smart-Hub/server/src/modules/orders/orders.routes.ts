@@ -5,11 +5,14 @@ import { fail, ok } from '../../shared/response';
 import {
   createOrder,
   deleteOrder,
+  getOrderFormOptions,
   getOrderDetail,
   importOrders,
   listOrders,
+  resolveCreateOrderRequestPayload,
   updateOrderStatus,
   type CreateOrderPayload,
+  type CreateOrderRequestPayload,
   type ImportSourceRow,
   type OrderStatusUpdate,
 } from './orders.service';
@@ -34,6 +37,10 @@ ordersRouter.get('/', requirePermission('orders.view'), (_req, res) => {
   return ok(res, listOrders());
 });
 
+ordersRouter.get('/form-options', requirePermission('orders.create'), (_req, res) => {
+  return ok(res, getOrderFormOptions());
+});
+
 ordersRouter.get('/:id', requirePermission('orders.view'), (req, res) => {
   const order = getOrderDetail(req.params.id);
   if (!order) {
@@ -44,13 +51,10 @@ ordersRouter.get('/:id', requirePermission('orders.view'), (req, res) => {
 });
 
 ordersRouter.post('/', requirePermission('orders.create'), (req, res) => {
-  const payload = req.body as Partial<CreateOrderPayload>;
+  const payload = req.body as Partial<CreateOrderRequestPayload>;
 
-  if (!payload.customerName?.trim()) {
-    return fail(res, 400, 'customerName is required');
-  }
-  if (!payload.orderChannel?.trim()) {
-    return fail(res, 400, 'orderChannel is required');
+  if (!payload.customerId?.trim()) {
+    return fail(res, 400, 'customerId is required');
   }
   if (!payload.expectedDeliveryDate?.trim()) {
     return fail(res, 400, 'expectedDeliveryDate is required');
@@ -62,10 +66,8 @@ ordersRouter.post('/', requirePermission('orders.create'), (req, res) => {
   const invalidItem = payload.items.some((item) => {
     return (
       !item ||
-      typeof item.sku !== 'string' ||
-      !item.sku.trim() ||
-      typeof item.productName !== 'string' ||
-      !item.productName.trim() ||
+      typeof item.productId !== 'string' ||
+      !item.productId.trim() ||
       typeof item.quantity !== 'number' ||
       item.quantity <= 0 ||
       typeof item.unitPrice !== 'number' ||
@@ -74,11 +76,15 @@ ordersRouter.post('/', requirePermission('orders.create'), (req, res) => {
   });
 
   if (invalidItem) {
-    return fail(res, 400, 'each item must include sku, productName, quantity and unitPrice');
+    return fail(res, 400, 'each item must include productId, quantity and unitPrice');
   }
 
-  const order = createOrder(payload as CreateOrderPayload);
-  return ok(res, order, '订单已创建。');
+  try {
+    const order = createOrder(resolveCreateOrderRequestPayload(payload as CreateOrderRequestPayload) as CreateOrderPayload);
+    return ok(res, order, '订单已创建。');
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Create order failed');
+  }
 });
 
 ordersRouter.post('/import', requirePermission('orders.create'), (req, res) => {

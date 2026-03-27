@@ -8,6 +8,9 @@ interface DesktopShellBridge {
     setToken: (token: string) => Promise<boolean>;
     clearToken: () => Promise<boolean>;
   };
+  documents?: {
+    printHtml: (html: string) => Promise<boolean>;
+  };
 }
 
 interface Window {

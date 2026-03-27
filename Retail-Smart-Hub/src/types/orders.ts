@@ -15,25 +15,44 @@ export interface OrderRecord {
 
 export interface OrderItemDraft {
   id: string;
-  sku: string;
-  productName: string;
+  productId: string;
   quantity: string;
   unitPrice: string;
 }
 
 export interface OrderItemPayload {
-  sku: string;
-  productName: string;
+  productId: string;
   quantity: number;
   unitPrice: number;
 }
 
 export interface CreateOrderPayload {
-  customerName: string;
-  orderChannel: string;
+  customerId: string;
   expectedDeliveryDate: string;
   remark?: string;
   items: OrderItemPayload[];
+}
+
+export interface OrderFormCustomerOption {
+  id: string;
+  name: string;
+  channelPreference: string;
+}
+
+export type OrderFormProductStatus = '正常' | '预警' | '缺货';
+
+export interface OrderFormProductOption {
+  productId: string;
+  sku: string;
+  name: string;
+  currentStock: number;
+  salePrice: number;
+  status: OrderFormProductStatus;
+}
+
+export interface OrderFormOptions {
+  customers: OrderFormCustomerOption[];
+  products: OrderFormProductOption[];
 }
 
 export interface UpdateOrderStatusPayload {

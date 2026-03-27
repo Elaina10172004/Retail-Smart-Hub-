@@ -14,6 +14,9 @@ const desktopShellBridge = Object.freeze({
     setToken: (token) => ipcRenderer.invoke('auth:set-token', typeof token === 'string' ? token : ''),
     clearToken: () => ipcRenderer.invoke('auth:clear-token'),
   }),
+  documents: Object.freeze({
+    printHtml: (html) => ipcRenderer.invoke('documents:print-html', typeof html === 'string' ? html : ''),
+  }),
 });
 
 contextBridge.exposeInMainWorld('desktopShell', desktopShellBridge);

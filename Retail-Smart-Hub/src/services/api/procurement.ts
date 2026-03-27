@@ -1,8 +1,10 @@
 ﻿import { apiClient } from '@/services/api/client';
 import type { ApiEnvelope } from '@/types/api';
 import type {
+  CreateProcurementOrderPayload,
   DeleteProcurementOrderResponse,
   GeneratedPurchaseOrder,
+  ProcurementFormOptions,
   ProcurementOrder,
   ProcurementOrderDetail,
   ProcurementSuggestionSummary,
@@ -21,8 +23,16 @@ export function fetchProcurementSuggestions() {
   return apiClient.get<ApiEnvelope<ProcurementSuggestionSummary>>('/procurement/suggestions');
 }
 
+export function fetchProcurementFormOptions() {
+  return apiClient.get<ApiEnvelope<ProcurementFormOptions>>('/procurement/form-options');
+}
+
 export function generateSuggestedPurchaseOrders() {
   return apiClient.post<ApiEnvelope<GeneratedPurchaseOrder[]>>('/procurement/generate-shortage-orders');
+}
+
+export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
+  return apiClient.post<ApiEnvelope<ProcurementOrderDetail>>('/procurement', payload);
 }
 
 export function updateProcurementStatus(id: string, payload: UpdateProcurementStatusPayload) {

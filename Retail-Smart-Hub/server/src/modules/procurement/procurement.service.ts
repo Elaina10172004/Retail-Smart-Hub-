@@ -1,4 +1,11 @@
-﻿import { appendAuditLog, appendInventoryMovement, createPayableForPurchaseOrder, db, nextDocumentId } from '../../database/db';
+import {
+  appendAuditLog,
+  appendInventoryMovement,
+  createPayableForPurchaseOrder,
+  db,
+  nextDocumentId,
+  nextMasterDataId,
+} from '../../database/db';
 import { addDays, currentDateString, formatCurrency } from '../../shared/format';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
 
@@ -81,6 +88,190 @@ export interface GeneratedPurchaseOrder {
   status: string;
 }
 
+export interface ProcurementFormSupplierOption {
+  id: string;
+  name: string;
+  leadTimeDays: number;
+}
+
+export interface ProcurementFormProductOption {
+  id: string;
+  sku: string;
+  name: string;
+  unit: string;
+  costPrice: number;
+  preferredSupplierId: string;
+  preferredSupplier: string;
+}
+
+export interface ProcurementFormOptions {
+  suppliers: ProcurementFormSupplierOption[];
+  products: ProcurementFormProductOption[];
+}
+
+export interface CreateProcurementNewProductPayload {
+  name: string;
+  sku?: string;
+  salePrice?: number;
+  category?: string;
+  unit?: string;
+  safeStock?: number;
+}
+
+export interface CreateProcurementOrderExistingItemPayload {
+  mode: 'existing';
+  productId: string;
+  quantity: number;
+  unitCost: number;
+}
+
+export interface CreateProcurementOrderNewItemPayload {
+  mode: 'new';
+  quantity: number;
+  unitCost: number;
+  newProduct: CreateProcurementNewProductPayload;
+}
+
+export type CreateProcurementOrderItemPayload =
+  | CreateProcurementOrderExistingItemPayload
+  | CreateProcurementOrderNewItemPayload;
+
+export interface CreateProcurementOrderPayload {
+  supplierId: string;
+  expectedDate: string;
+  remark?: string;
+  items: CreateProcurementOrderItemPayload[];
+}
+
+interface ManualProcurementProductRow {
+  id: string;
+  sku: string;
+  name: string;
+  unit: string;
+  costPrice: number;
+  preferredSupplierId: string;
+  preferredSupplier: string;
+}
+
+interface QuickCreateProductResult {
+  id: string;
+  sku: string;
+  name: string;
+}
+
+function isValidDateString(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  return !Number.isNaN(new Date(`${value}T00:00:00`).getTime());
+}
+
+function normalizeOptionalText(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function resolveNextSku() {
+  const rows = db.prepare<{ sku: string }>("SELECT sku FROM products WHERE sku LIKE 'SKU-%'").all();
+  let maxSuffix = 999;
+
+  rows.forEach((row) => {
+    const match = /^SKU-(\d+)$/i.exec(row.sku.trim());
+    if (!match) {
+      return;
+    }
+
+    const parsed = Number(match[1]);
+    if (Number.isInteger(parsed) && parsed > maxSuffix) {
+      maxSuffix = parsed;
+    }
+  });
+
+  let next = maxSuffix + 1;
+  while (true) {
+    const candidate = `SKU-${String(next).padStart(4, '0')}`;
+    const existing = db.prepare<{ id: string }>('SELECT id FROM products WHERE sku = ?').get(candidate);
+    if (!existing) {
+      return candidate;
+    }
+    next += 1;
+  }
+}
+
+function resolveProcurementSku(rawSku?: string) {
+  const normalizedSku = normalizeOptionalText(rawSku).toUpperCase();
+  if (!normalizedSku) {
+    return resolveNextSku();
+  }
+
+  const existing = db.prepare<{ id: string }>('SELECT id FROM products WHERE sku = ?').get(normalizedSku);
+  if (existing) {
+    throw new Error(`SKU ${normalizedSku} already exists`);
+  }
+
+  return normalizedSku;
+}
+
+function getDefaultWarehouseId() {
+  const configuredWarehouse = db.prepare<{ id: string }>('SELECT id FROM warehouses WHERE id = ?').get(DEFAULT_WAREHOUSE_ID);
+  if (configuredWarehouse?.id) {
+    return configuredWarehouse.id;
+  }
+
+  return db.prepare<{ id: string }>('SELECT id FROM warehouses ORDER BY id ASC LIMIT 1').get()?.id ?? null;
+}
+
+function createQuickProcurementProduct(
+  supplierId: string,
+  item: CreateProcurementOrderNewItemPayload,
+): QuickCreateProductResult {
+  const name = normalizeOptionalText(item.newProduct?.name);
+  if (!name) {
+    throw new Error('new product name is required');
+  }
+
+  const safeStock = item.newProduct?.safeStock ?? 0;
+  if (!Number.isInteger(safeStock) || safeStock < 0) {
+    throw new Error(`new product ${name} has invalid safeStock`);
+  }
+
+  const salePrice = item.newProduct?.salePrice ?? item.unitCost;
+  if (!Number.isFinite(salePrice) || salePrice <= 0) {
+    throw new Error(`new product ${name} has invalid salePrice`);
+  }
+
+  const sku = resolveProcurementSku(item.newProduct?.sku);
+  const productId = nextMasterDataId('products', 'PRD');
+  const inventoryId = nextMasterDataId('inventory', 'INV');
+  const warehouseId = getDefaultWarehouseId();
+  const category = normalizeOptionalText(item.newProduct?.category) || '采购新增';
+  const unit = normalizeOptionalText(item.newProduct?.unit) || '件';
+
+  db.prepare(
+    `INSERT INTO products (
+      id, sku, name, category, unit, status, safe_stock, sale_price, cost_price, preferred_supplier_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(productId, sku, name, category, unit, 'active', safeStock, salePrice, item.unitCost, supplierId);
+
+  if (warehouseId) {
+    db.prepare(
+      'INSERT INTO inventory (id, product_id, warehouse_id, current_stock, reserved_stock) VALUES (?, ?, ?, ?, ?)',
+    ).run(inventoryId, productId, warehouseId, 0, 0);
+  }
+
+  appendAuditLog('create_product_from_procurement', 'product', productId, {
+    supplierId,
+    sku,
+    name,
+  });
+
+  return {
+    id: productId,
+    sku,
+    name,
+  };
+}
+
 function loadSuggestedItems() {
   return db.prepare<SuggestedItem>(`
     SELECT
@@ -117,6 +308,39 @@ function loadSuggestedItems() {
       AND COALESCE(inv.currentStock, 0) + COALESCE(transit.transitStock, 0) < p.safe_stock
     ORDER BY recommendQty DESC, p.sku ASC
   `).all();
+}
+
+export function getProcurementFormOptions(): ProcurementFormOptions {
+  const suppliers = db.prepare<ProcurementFormSupplierOption>(`
+    SELECT
+      id,
+      name,
+      lead_time_days as leadTimeDays
+    FROM suppliers
+    WHERE status = 'active'
+    ORDER BY name COLLATE NOCASE ASC, id ASC
+  `).all();
+
+  const products = db.prepare<ManualProcurementProductRow>(`
+    SELECT
+      p.id,
+      p.sku,
+      p.name,
+      p.unit,
+      p.cost_price as costPrice,
+      p.preferred_supplier_id as preferredSupplierId,
+      s.name as preferredSupplier
+    FROM products p
+    JOIN suppliers s ON s.id = p.preferred_supplier_id
+    WHERE p.status = 'active'
+      AND s.status = 'active'
+    ORDER BY s.name COLLATE NOCASE ASC, p.sku COLLATE NOCASE ASC, p.id ASC
+  `).all();
+
+  return {
+    suppliers,
+    products,
+  };
 }
 
 export function listProcurementOrders() {
@@ -210,6 +434,144 @@ export function getProcurementSuggestions(): ProcurementSuggestionSummary {
   };
 }
 
+export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
+  const supplierId = payload.supplierId.trim();
+  const expectedDate = payload.expectedDate.trim();
+  const remark = payload.remark?.trim() || null;
+
+  if (!supplierId) {
+    throw new Error('supplierId is required');
+  }
+
+  if (!expectedDate || !isValidDateString(expectedDate)) {
+    throw new Error('expectedDate must be a valid YYYY-MM-DD date');
+  }
+
+  if (!Array.isArray(payload.items) || payload.items.length === 0) {
+    throw new Error('items must contain at least one line');
+  }
+
+  const uniqueProductIds = new Set<string>();
+  payload.items.forEach((item, index) => {
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      throw new Error(`items[${index}].quantity must be a positive integer`);
+    }
+
+    if (!Number.isFinite(item.unitCost) || item.unitCost <= 0) {
+      throw new Error(`items[${index}].unitCost must be greater than 0`);
+    }
+
+    if (item.mode === 'existing') {
+      if (!item.productId?.trim()) {
+        throw new Error(`items[${index}].productId is required`);
+      }
+      if (uniqueProductIds.has(item.productId.trim())) {
+        throw new Error('duplicate product lines are not allowed');
+      }
+      uniqueProductIds.add(item.productId.trim());
+      return;
+    }
+
+    if (item.mode === 'new') {
+      if (!normalizeOptionalText(item.newProduct?.name)) {
+        throw new Error(`items[${index}].newProduct.name is required`);
+      }
+      return;
+    }
+
+    throw new Error(`items[${index}].mode is invalid`);
+  });
+
+  const supplier = db.prepare<{ id: string; name: string }>(
+    "SELECT id, name FROM suppliers WHERE id = ? AND status = 'active'",
+  ).get(supplierId);
+  if (!supplier) {
+    throw new Error('Active supplier not found');
+  }
+
+  const existingItems = payload.items.filter(
+    (item): item is CreateProcurementOrderExistingItemPayload => item.mode === 'existing',
+  );
+  const productIds = existingItems.map((item) => item.productId.trim());
+  const products = productIds.length
+    ? db.prepare<ManualProcurementProductRow>(`
+        SELECT
+          p.id,
+          p.sku,
+          p.name,
+          p.unit,
+          p.cost_price as costPrice,
+          p.preferred_supplier_id as preferredSupplierId,
+          s.name as preferredSupplier
+        FROM products p
+        JOIN suppliers s ON s.id = p.preferred_supplier_id
+        WHERE p.id IN (${productIds.map(() => '?').join(', ')})
+          AND p.status = 'active'
+          AND s.status = 'active'
+      `).all(...productIds)
+    : [];
+
+  if (products.length !== productIds.length) {
+    throw new Error('Some selected products are missing or inactive');
+  }
+
+  const productMap = new Map(products.map((product) => [product.id, product]));
+  existingItems.forEach((item) => {
+    const product = productMap.get(item.productId.trim());
+    if (!product) {
+      throw new Error(`Product ${item.productId} is not available`);
+    }
+    if (product.preferredSupplierId !== supplierId) {
+      throw new Error(`Product ${product.sku} does not belong to the selected supplier`);
+    }
+  });
+
+  const today = currentDateString();
+  const poId = nextDocumentId('purchase_orders', 'PO', today);
+
+  const transaction = db.transaction(() => {
+    const createdProducts: QuickCreateProductResult[] = [];
+
+    db.prepare(
+      'INSERT INTO purchase_orders (id, supplier_id, created_at, expected_at, status, source, remark) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(poId, supplierId, today, expectedDate, '待审核', '手工创建', remark);
+
+    const insertItem = db.prepare(
+      'INSERT INTO purchase_order_items (id, purchase_order_id, product_id, ordered_qty, arrived_qty, unit_cost) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+
+    payload.items.forEach((item, index) => {
+      const productId =
+        item.mode === 'existing'
+          ? item.productId.trim()
+          : (() => {
+              const created = createQuickProcurementProduct(supplierId, item);
+              createdProducts.push(created);
+              return created.id;
+            })();
+
+      insertItem.run(`${poId}-ITEM-${index + 1}`, poId, productId, item.quantity, 0, item.unitCost);
+    });
+
+    createPayableForPurchaseOrder(poId, {
+      seedByStatus: false,
+      remark: '采购单创建后自动生成应付记录。',
+    });
+
+    appendAuditLog('create_purchase_order_manual', 'purchase_order', poId, {
+      supplierId,
+      supplierName: supplier.name,
+      itemCount: payload.items.length,
+      expectedDate,
+      remark,
+      createdProducts,
+    });
+  });
+
+  transaction();
+  return getProcurementOrderDetail(poId) as ProcurementOrderDetail;
+}
+
 export function generateSuggestedPurchaseOrders() {
   const items = loadSuggestedItems();
   if (items.length === 0) {
@@ -227,10 +589,10 @@ export function generateSuggestedPurchaseOrders() {
   const transaction = db.transaction(() => {
     const created: GeneratedPurchaseOrder[] = [];
     const insertPo = db.prepare(
-      'INSERT INTO purchase_orders (id, supplier_id, created_at, expected_at, status, source, remark) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO purchase_orders (id, supplier_id, created_at, expected_at, status, source, remark) VALUES (?, ?, ?, ?, ?, ?, ?)',
     );
     const insertItem = db.prepare(
-      'INSERT INTO purchase_order_items (id, purchase_order_id, product_id, ordered_qty, arrived_qty, unit_cost) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO purchase_order_items (id, purchase_order_id, product_id, ordered_qty, arrived_qty, unit_cost) VALUES (?, ?, ?, ?, ?, ?)',
     );
 
     groups.forEach((supplierItems, supplierId) => {
@@ -245,18 +607,11 @@ export function generateSuggestedPurchaseOrders() {
         expectedDate,
         '待审核',
         '低库存自动补货',
-        `由系统自动生成，包含 ${supplierItems.length} 个补货 SKU。`
+        `由系统自动生成，包含 ${supplierItems.length} 个补货 SKU。`,
       );
 
       supplierItems.forEach((item, index) => {
-        insertItem.run(
-          `${poId}-ITEM-${index + 1}`,
-          poId,
-          item.productId,
-          item.recommendQty,
-          0,
-          item.unitCost
-        );
+        insertItem.run(`${poId}-ITEM-${index + 1}`, poId, item.productId, item.recommendQty, 0, item.unitCost);
       });
 
       createPayableForPurchaseOrder(poId, {
@@ -290,9 +645,7 @@ export function updateProcurementOrderStatus(id: string, nextStatus: string) {
     throw new Error('Unsupported procurement status');
   }
 
-  const existing = db
-    .prepare<{ id: string; status: string }>('SELECT id, status FROM purchase_orders WHERE id = ?')
-    .get(id);
+  const existing = db.prepare<{ id: string; status: string }>('SELECT id, status FROM purchase_orders WHERE id = ?').get(id);
   if (!existing) {
     throw new Error('Procurement order not found');
   }
@@ -308,9 +661,7 @@ export function updateProcurementOrderStatus(id: string, nextStatus: string) {
 
 export function deleteProcurementOrder(id: string, options?: { aggressive?: boolean }) {
   const aggressive = Boolean(options?.aggressive);
-  const existing = db
-    .prepare<{ id: string; status: string }>('SELECT id, status FROM purchase_orders WHERE id = ?')
-    .get(id);
+  const existing = db.prepare<{ id: string; status: string }>('SELECT id, status FROM purchase_orders WHERE id = ?').get(id);
   if (!existing) {
     throw new Error('Procurement order not found');
   }
@@ -336,52 +687,56 @@ export function deleteProcurementOrder(id: string, options?: { aggressive?: bool
       .all(id);
 
     inboundRows.forEach((inbound) => {
-      if (inbound.status === '已入库') {
-        const items = db
-          .prepare<{ productId: string; qualifiedQty: number }>(
-            'SELECT product_id as productId, qualified_qty as qualifiedQty FROM receiving_note_items WHERE receiving_note_id = ?',
-          )
-          .all(inbound.receivingNoteId);
-
-        items.forEach((item) => {
-          const stock = db
-            .prepare<{ currentStock: number; reservedStock: number }>(
-              "SELECT current_stock as currentStock, reserved_stock as reservedStock FROM inventory WHERE product_id = ? AND warehouse_id = ?",
-            )
-            .get(item.productId, inbound.warehouseId || DEFAULT_WAREHOUSE_ID);
-          if (!stock) {
-            throw new Error(`Inventory record missing while rolling back procurement ${id}`);
-          }
-          if (stock.currentStock < item.qualifiedQty) {
-            throw new Error(
-              `Inventory inconsistency for rollback: product ${item.productId} current=${stock.currentStock}, rollback=${item.qualifiedQty}`,
-            );
-          }
-
-          const qtyAfter = stock.currentStock - item.qualifiedQty;
-          db.prepare('UPDATE inventory SET current_stock = ? WHERE product_id = ? AND warehouse_id = ?').run(
-            qtyAfter,
-            item.productId,
-            inbound.warehouseId || DEFAULT_WAREHOUSE_ID,
-          );
-
-          appendInventoryMovement({
-            productId: item.productId,
-            warehouseId: inbound.warehouseId || DEFAULT_WAREHOUSE_ID,
-            movementType: 'reverse',
-            sourceType: 'purchase_order',
-            sourceId: id,
-            qtyChange: -item.qualifiedQty,
-            reservedChange: 0,
-            qtyBefore: stock.currentStock,
-            qtyAfter,
-            reservedBefore: stock.reservedStock,
-            reservedAfter: stock.reservedStock,
-            occurredAt: new Date().toISOString(),
-            remark: `删除采购单回滚入库 ${inbound.receivingNoteId}`,
-          });
-        });
+      if (inbound.status !== '已入库') {
+        return;
       }
+
+      const items = db
+        .prepare<{ productId: string; qualifiedQty: number }>(
+          'SELECT product_id as productId, qualified_qty as qualifiedQty FROM receiving_note_items WHERE receiving_note_id = ?',
+        )
+        .all(inbound.receivingNoteId);
+
+      items.forEach((item) => {
+        const warehouseId = inbound.warehouseId || DEFAULT_WAREHOUSE_ID;
+        const stock = db
+          .prepare<{ currentStock: number; reservedStock: number }>(
+            'SELECT current_stock as currentStock, reserved_stock as reservedStock FROM inventory WHERE product_id = ? AND warehouse_id = ?',
+          )
+          .get(item.productId, warehouseId);
+
+        if (!stock) {
+          throw new Error(`Inventory record missing while rolling back procurement ${id}`);
+        }
+        if (stock.currentStock < item.qualifiedQty) {
+          throw new Error(
+            `Inventory inconsistency for rollback: product ${item.productId} current=${stock.currentStock}, rollback=${item.qualifiedQty}`,
+          );
+        }
+
+        const qtyAfter = stock.currentStock - item.qualifiedQty;
+        db.prepare('UPDATE inventory SET current_stock = ? WHERE product_id = ? AND warehouse_id = ?').run(
+          qtyAfter,
+          item.productId,
+          warehouseId,
+        );
+
+        appendInventoryMovement({
+          productId: item.productId,
+          warehouseId,
+          movementType: 'reverse',
+          sourceType: 'purchase_order',
+          sourceId: id,
+          qtyChange: -item.qualifiedQty,
+          reservedChange: 0,
+          qtyBefore: stock.currentStock,
+          qtyAfter,
+          reservedBefore: stock.reservedStock,
+          reservedAfter: stock.reservedStock,
+          occurredAt: new Date().toISOString(),
+          remark: `删除采购单回滚入库 ${inbound.receivingNoteId}`,
+        });
+      });
     });
 
     db.prepare(`

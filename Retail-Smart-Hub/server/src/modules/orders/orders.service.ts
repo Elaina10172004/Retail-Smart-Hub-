@@ -1,6 +1,7 @@
 ﻿import { appendAuditLog, appendInventoryMovement, createReceivableForSalesOrder, db, nextDocumentId, upsertCustomerProfile } from '../../database/db';
 import { currentDateString, currentDateTimeString, formatCurrency } from '../../shared/format';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
+import { ensureCustomerProfiles } from '../../database/db';
 
 export type OrderStatus = '待发货' | '已发货' | '已完成' | '已取消';
 export type StockStatus = '库存充足' | '部分缺货' | '待校验' | '-';
@@ -31,6 +32,41 @@ export interface CreateOrderPayload {
   bizNo?: string;
   idempotencyKey?: string;
   items: OrderItemPayload[];
+}
+
+export interface CreateOrderRequestItemPayload {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface CreateOrderRequestPayload {
+  customerId: string;
+  expectedDeliveryDate: string;
+  remark?: string;
+  items: CreateOrderRequestItemPayload[];
+}
+
+export interface OrderFormCustomerOption {
+  id: string;
+  name: string;
+  channelPreference: string;
+}
+
+export type OrderFormProductStatus = '正常' | '预警' | '缺货';
+
+export interface OrderFormProductOption {
+  productId: string;
+  sku: string;
+  name: string;
+  currentStock: number;
+  salePrice: number;
+  status: OrderFormProductStatus;
+}
+
+export interface OrderFormOptions {
+  customers: OrderFormCustomerOption[];
+  products: OrderFormProductOption[];
 }
 
 export interface ImportSourceRow {
@@ -144,6 +180,21 @@ interface ProductSnapshot {
   salePrice: number;
 }
 
+interface CustomerSelectionRow {
+  id: string;
+  name: string;
+  channelPreference: string;
+}
+
+interface ProductSelectionRow {
+  productId: string;
+  sku: string;
+  name: string;
+  currentStock: number;
+  safeStock: number;
+  salePrice: number;
+}
+
 function normalizeImportKey(value: string) {
   return value.toLowerCase().replace(/[\s_\-()（）[\]{}:：/\\]/g, '');
 }
@@ -192,6 +243,26 @@ function parsePositiveNumber(value: unknown) {
   }
 
   return parsed;
+}
+
+function isValidDateString(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  return !Number.isNaN(new Date(`${value}T00:00:00`).getTime());
+}
+
+function buildInventoryAlertStatus(currentStock: number, safeStock: number): OrderFormProductStatus {
+  if (currentStock < safeStock * 0.6) {
+    return '缺货';
+  }
+
+  if (currentStock < safeStock) {
+    return '预警';
+  }
+
+  return '正常';
 }
 
 function findActiveProductBySku(sku: string) {
@@ -299,6 +370,135 @@ function releaseOrderReservations(orderId: string, sourceType: string) {
 
   db.prepare('DELETE FROM stock_reservations WHERE sales_order_id = ?').run(orderId);
   return reservations.length;
+}
+
+export function getOrderFormOptions(): OrderFormOptions {
+  ensureCustomerProfiles();
+
+  const customers = db.prepare<CustomerSelectionRow>(`
+    SELECT
+      id,
+      name,
+      COALESCE(channel_preference, '-') as channelPreference
+    FROM customers
+    WHERE status = 'active'
+    ORDER BY total_sales DESC, last_order_date DESC, name COLLATE NOCASE ASC, id ASC
+  `).all();
+
+  const products = db.prepare<ProductSelectionRow>(`
+    SELECT
+      p.id as productId,
+      p.sku,
+      p.name,
+      COALESCE(SUM(i.current_stock), 0) as currentStock,
+      p.safe_stock as safeStock,
+      p.sale_price as salePrice
+    FROM products p
+    LEFT JOIN inventory i ON i.product_id = p.id
+    WHERE p.status = 'active'
+    GROUP BY p.id, p.sku, p.name, p.safe_stock, p.sale_price
+    ORDER BY p.name COLLATE NOCASE ASC, p.sku COLLATE NOCASE ASC
+  `).all();
+
+  return {
+    customers: customers.map((customer) => ({
+      id: customer.id,
+      name: customer.name,
+      channelPreference: customer.channelPreference,
+    })),
+    products: products.map((product) => ({
+      productId: product.productId,
+      sku: product.sku,
+      name: product.name,
+      currentStock: product.currentStock,
+      salePrice: product.salePrice,
+      status: buildInventoryAlertStatus(product.currentStock, product.safeStock),
+    })),
+  };
+}
+
+export function resolveCreateOrderRequestPayload(payload: CreateOrderRequestPayload): CreateOrderPayload {
+  ensureCustomerProfiles();
+
+  const customerId = payload.customerId.trim();
+  const expectedDeliveryDate = payload.expectedDeliveryDate.trim();
+  const remark = payload.remark?.trim();
+
+  if (!customerId) {
+    throw new Error('customerId is required');
+  }
+
+  if (!expectedDeliveryDate || !isValidDateString(expectedDeliveryDate)) {
+    throw new Error('expectedDeliveryDate must be a valid YYYY-MM-DD date');
+  }
+
+  if (!Array.isArray(payload.items) || payload.items.length === 0) {
+    throw new Error('items must contain at least one line');
+  }
+
+  const customer = db.prepare<CustomerSelectionRow>(`
+    SELECT
+      id,
+      name,
+      COALESCE(channel_preference, '-') as channelPreference
+    FROM customers
+    WHERE id = ?
+      AND status = 'active'
+  `).get(customerId);
+  if (!customer) {
+    throw new Error('Active customer not found');
+  }
+
+  const uniqueProductIds = new Set<string>();
+  payload.items.forEach((item, index) => {
+    if (!item?.productId?.trim()) {
+      throw new Error(`items[${index}].productId is required`);
+    }
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      throw new Error(`items[${index}].quantity must be a positive integer`);
+    }
+    if (!Number.isFinite(item.unitPrice) || item.unitPrice <= 0) {
+      throw new Error(`items[${index}].unitPrice must be greater than 0`);
+    }
+    if (uniqueProductIds.has(item.productId.trim())) {
+      throw new Error('duplicate product lines are not allowed');
+    }
+    uniqueProductIds.add(item.productId.trim());
+  });
+
+  const productIds = payload.items.map((item) => item.productId.trim());
+  const products = db.prepare<{ id: string; sku: string; name: string }>(`
+    SELECT id, sku, name
+    FROM products
+    WHERE id IN (${productIds.map(() => '?').join(', ')})
+      AND status = 'active'
+  `).all(...productIds);
+
+  if (products.length !== productIds.length) {
+    throw new Error('Some selected products are missing or inactive');
+  }
+
+  const productMap = new Map(products.map((product) => [product.id, product]));
+
+  return {
+    customerName: customer.name,
+    orderChannel: customer.channelPreference || '-',
+    expectedDeliveryDate,
+    remark: remark || undefined,
+    items: payload.items.map((item) => {
+      const product = productMap.get(item.productId.trim());
+      if (!product) {
+        throw new Error(`Product ${item.productId} is not available`);
+      }
+
+      return {
+        sku: product.sku,
+        productName: product.name,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+      };
+    }),
+  };
 }
 
 export function listOrders() {

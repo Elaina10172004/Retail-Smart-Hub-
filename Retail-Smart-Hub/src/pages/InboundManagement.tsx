@@ -6,12 +6,15 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
+import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { useAuth } from '@/auth/AuthContext';
+import { buildInboundDocument } from '@/lib/documents';
 import { Archive, ArrowRight, CheckCircle2, Eye, Filter, LoaderCircle, PackageCheck, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react';
 import { advanceArrival, fetchArrivals } from '@/services/api/arrival';
 import { confirmInbound, deleteInbound, fetchInboundDetail, fetchInbounds, updateInboundStatus } from '@/services/api/inbound';
+import type { DocumentPreviewRecord } from '@/types/documents';
 import type { ArrivalRecord } from '@/types/arrival';
-import type { InboundDetailRecord, InboundRecord, UpdateInboundStatusPayload } from '@/types/inbound';
+import type { InboundRecord, UpdateInboundStatusPayload } from '@/types/inbound';
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试。';
@@ -27,11 +30,12 @@ export function InboundManagement() {
   const canConfirmInbound = hasPermission('procurement.manage');
   const [arrivals, setArrivals] = useState<ArrivalRecord[]>([]);
   const [inbounds, setInbounds] = useState<InboundRecord[]>([]);
-  const [selectedInbound, setSelectedInbound] = useState<InboundDetailRecord | null>(null);
+  const [previewDocuments, setPreviewDocuments] = useState<DocumentPreviewRecord[]>([]);
+  const [previewInitialId, setPreviewInitialId] = useState('');
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [pageError, setPageError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
   const [activeId, setActiveId] = useState('');
@@ -91,16 +95,23 @@ export function InboundManagement() {
     void loadInboundHub();
   }, []);
 
+  const openPreview = (documents: DocumentPreviewRecord[], activeId?: string) => {
+    if (documents.length === 0) {
+      return;
+    }
+
+    setPreviewDocuments(documents);
+    setPreviewInitialId(activeId || documents[0]?.id || '');
+    setIsPreviewOpen(true);
+  };
+
   const handleViewDetail = async (id: string) => {
-    setIsDetailLoading(true);
     setPageError('');
     try {
       const response = await fetchInboundDetail(id);
-      setSelectedInbound(response.data);
+      openPreview([buildInboundDocument(response.data)], response.data.id);
     } catch (error) {
       setPageError(getErrorMessage(error));
-    } finally {
-      setIsDetailLoading(false);
     }
   };
 
@@ -117,9 +128,8 @@ export function InboundManagement() {
     try {
       const response = await confirmInbound(id);
       setActionMessage(response.message || '入库已确认。');
-      if (selectedInbound?.id === id) {
-        await handleViewDetail(id);
-      }
+      const detailResponse = await fetchInboundDetail(id);
+      openPreview([buildInboundDocument(detailResponse.data)], detailResponse.data.id);
       await loadInboundHub();
     } catch (error) {
       setPageError(getErrorMessage(error));
@@ -220,9 +230,6 @@ export function InboundManagement() {
     try {
       const response = await updateInboundStatus(forceStatusDraft.inboundId, { status: nextStatus } as UpdateInboundStatusPayload);
       setActionMessage(response.message || `入库单 ${forceStatusDraft.inboundId} 状态已更新。`);
-      if (selectedInbound?.id === forceStatusDraft.inboundId) {
-        await handleViewDetail(forceStatusDraft.inboundId);
-      }
       setForceStatusDraft(null);
       await loadInboundHub();
     } catch (error) {
@@ -251,8 +258,8 @@ export function InboundManagement() {
     try {
       const response = await deleteInbound(inbound.id, { aggressive: true });
       setActionMessage(response.message || `入库单 ${inbound.id} 已删除。`);
-      if (selectedInbound?.id === inbound.id) {
-        setSelectedInbound(null);
+      if (previewDocuments.some((item) => item.id === inbound.id)) {
+        setIsPreviewOpen(false);
       }
       await loadInboundHub();
     } catch (error) {
@@ -311,45 +318,6 @@ export function InboundManagement() {
 
       {pageError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">入库数据处理失败：{pageError}</div>}
       {actionMessage && <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{actionMessage}</div>}
-
-      {(selectedInbound || isDetailLoading) && (
-        <Card className="border-gray-200 shadow-sm">
-          <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
-            <CardTitle className="text-lg font-semibold text-gray-800 flex items-center justify-between gap-3">
-              <span>入库详情</span>
-              <Button variant="ghost" size="sm" onClick={() => setSelectedInbound(null)}>关闭</Button>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-6">
-            {isDetailLoading ? <div className="text-sm text-gray-500">正在加载入库详情...</div> : null}
-            {selectedInbound ? (
-              <div className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">入库单 / 收货单</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedInbound.id}</div><div className="mt-1 text-xs text-gray-500">{selectedInbound.rcvId}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">供应商 / 采购单</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedInbound.supplier}</div><div className="mt-1 text-xs text-gray-500">{selectedInbound.poId}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">库位与件数</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedInbound.warehouse}</div><div className="mt-1 text-xs text-gray-500">共 {selectedInbound.items} 件</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">状态</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedInbound.status}</div><div className="mt-1 text-xs text-gray-500">完成时间：{selectedInbound.completedAt || '-'}</div></div>
-                </div>
-                <div className="space-y-3">
-                  <h3 className="text-sm font-semibold text-gray-900">入库明细</h3>
-                  {selectedInbound.itemsDetail.map((item) => (
-                    <div key={`${selectedInbound.id}-${item.sku}`} className="rounded-lg border border-gray-200 p-4">
-                      <div className="flex items-center justify-between gap-4">
-                        <div>
-                          <div className="text-sm font-semibold text-gray-900">{item.productName}</div>
-                          <div className="mt-1 text-xs text-gray-500">{item.sku}</div>
-                        </div>
-                        <div className="text-right text-sm font-medium text-gray-900">入库 {item.qualifiedQty}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
-      )}
-
       <div className="flex items-center justify-center py-6 bg-white rounded-xl border border-gray-200 shadow-sm">
         <div className="flex items-center gap-4">
           <div className="flex flex-col items-center"><div className="h-12 w-12 rounded-full bg-gray-100 flex items-center justify-center text-gray-400 border-2 border-gray-200"><PackageCheck className="h-6 w-6" /></div><span className="text-sm font-medium mt-2 text-gray-500">1. 确认到货</span></div>
@@ -448,6 +416,12 @@ export function InboundManagement() {
           </Card>
         </div>
       ) : null}
+      <DocumentPreviewModal
+        documents={previewDocuments}
+        isOpen={isPreviewOpen}
+        initialActiveId={previewInitialId}
+        onClose={() => setIsPreviewOpen(false)}
+      />
       {confirmDialog}
     </div>
   );

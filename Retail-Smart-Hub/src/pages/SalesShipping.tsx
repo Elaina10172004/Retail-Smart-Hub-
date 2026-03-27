@@ -6,11 +6,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
+import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { useAuth } from '@/auth/AuthContext';
+import { buildShippingDocument } from '@/lib/documents';
 import { downloadCsv, downloadTextFile } from '@/lib/export';
 import { AlertCircle, Eye, LoaderCircle, Package, RefreshCw, Search, Truck } from 'lucide-react';
 import { dispatchShipment, fetchShipmentDetail, fetchShipments } from '@/services/api/shipping';
-import type { ShipmentStockStatus, ShippingDetailRecord, ShippingRecord } from '@/types/shipping';
+import type { DocumentPreviewRecord } from '@/types/documents';
+import type { ShipmentStockStatus, ShippingRecord } from '@/types/shipping';
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试。';
@@ -33,11 +36,12 @@ export function SalesShipping() {
   const { confirm, confirmDialog } = useConfirmDialog();
   const canDispatchShipment = hasPermission('shipping.dispatch');
   const [shipments, setShipments] = useState<ShippingRecord[]>([]);
-  const [selectedShipment, setSelectedShipment] = useState<ShippingDetailRecord | null>(null);
+  const [previewDocuments, setPreviewDocuments] = useState<DocumentPreviewRecord[]>([]);
+  const [previewInitialId, setPreviewInitialId] = useState('');
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [pageError, setPageError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
   const [activeId, setActiveId] = useState('');
@@ -79,16 +83,23 @@ export function SalesShipping() {
     void loadShipments();
   }, []);
 
+  const openPreview = (documents: DocumentPreviewRecord[], activeId?: string) => {
+    if (documents.length === 0) {
+      return;
+    }
+
+    setPreviewDocuments(documents);
+    setPreviewInitialId(activeId || documents[0]?.id || '');
+    setIsPreviewOpen(true);
+  };
+
   const handleViewDetail = async (id: string) => {
-    setIsDetailLoading(true);
     setPageError('');
     try {
       const response = await fetchShipmentDetail(id);
-      setSelectedShipment(response.data);
+      openPreview([buildShippingDocument(response.data)], response.data.id);
     } catch (error) {
       setPageError(getErrorMessage(error));
-    } finally {
-      setIsDetailLoading(false);
     }
   };
 
@@ -105,9 +116,8 @@ export function SalesShipping() {
     try {
       const response = await dispatchShipment(id);
       setActionMessage(response.message || '发货已完成。');
-      if (selectedShipment?.id === id) {
-        await handleViewDetail(id);
-      }
+      const detailResponse = await fetchShipmentDetail(id);
+      openPreview([buildShippingDocument(detailResponse.data)], detailResponse.data.id);
       await loadShipments();
     } catch (error) {
       setPageError(getErrorMessage(error));
@@ -213,46 +223,6 @@ export function SalesShipping() {
 
       {pageError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">发货数据处理失败：{pageError}</div>}
       {actionMessage && <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{actionMessage}</div>}
-
-      {(selectedShipment || isDetailLoading) && (
-        <Card className="border-gray-200 shadow-sm">
-          <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
-            <CardTitle className="text-lg font-semibold text-gray-800 flex items-center justify-between gap-3">
-              <span>发货详情</span>
-              <Button variant="ghost" size="sm" onClick={() => setSelectedShipment(null)}>关闭</Button>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-6">
-            {isDetailLoading ? <div className="text-sm text-gray-500">正在加载发货详情...</div> : null}
-            {selectedShipment ? (
-              <div className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">发货单 / 订单</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedShipment.id}</div><div className="mt-1 text-xs text-gray-500">{selectedShipment.orderId}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">客户 / 渠道</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedShipment.customer}</div><div className="mt-1 text-xs text-gray-500">{selectedShipment.orderChannel}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">物流信息</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedShipment.courier}</div><div className="mt-1 text-xs text-gray-500">{selectedShipment.trackingNo}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">状态</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedShipment.status}</div><div className="mt-1 text-xs text-gray-500">发货时间：{selectedShipment.shippedAt || '-'}</div></div>
-                </div>
-                <div className="space-y-3">
-                  <h3 className="text-sm font-semibold text-gray-900">发货明细</h3>
-                  {selectedShipment.itemsDetail.map((item) => (
-                    <div key={`${selectedShipment.id}-${item.sku}`} className="rounded-lg border border-gray-200 p-4">
-                      <div className="flex items-center justify-between gap-4">
-                        <div>
-                          <div className="text-sm font-semibold text-gray-900">{item.productName}</div>
-                          <div className="mt-1 text-xs text-gray-500">{item.sku}</div>
-                        </div>
-                        <div className="text-right text-sm font-medium text-gray-900">发货 {item.quantity}</div>
-                      </div>
-                    </div>
-                  ))}
-                  {selectedShipment.remark ? <div className="rounded-lg border border-gray-200 p-4 text-sm text-gray-700"><div className="mb-2 font-semibold text-gray-900">备注</div>{selectedShipment.remark}</div> : null}
-                </div>
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
-      )}
-
       <Card className="border-gray-200 shadow-sm">
         <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
           <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
@@ -299,6 +269,12 @@ export function SalesShipping() {
           <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/30 rounded-b-xl"><div className="text-sm text-gray-500">当前显示 {filteredShipments.length} 条发货单记录，可批量发货 {dispatchableShipments.length} 条</div>{isLoading && <LoaderCircle className="h-4 w-4 animate-spin text-gray-400" />}</div>
         </CardContent>
       </Card>
+      <DocumentPreviewModal
+        documents={previewDocuments}
+        isOpen={isPreviewOpen}
+        initialActiveId={previewInitialId}
+        onClose={() => setIsPreviewOpen(false)}
+      />
       {confirmDialog}
     </div>
   );

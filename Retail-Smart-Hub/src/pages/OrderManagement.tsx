@@ -1,24 +1,51 @@
-﻿import React, { Fragment, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
+import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { useAuth } from '@/auth/AuthContext';
+import { buildOrderDocument } from '@/lib/documents';
 import { formatCurrency } from '@/lib/format';
-import { CheckCircle2, CopyPlus, Eye, Filter, LoaderCircle, PackagePlus, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
-import { createOrder, deleteOrder, fetchOrderDetail, fetchOrders, updateOrderStatus } from '@/services/api/orders';
-import type { CreateOrderPayload, OrderDetailRecord, OrderItemDraft, OrderRecord } from '@/types/orders';
+import {
+  CheckCircle2,
+  CopyPlus,
+  Eye,
+  Filter,
+  LoaderCircle,
+  PackagePlus,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react';
+import {
+  createOrder,
+  deleteOrder,
+  fetchOrderDetail,
+  fetchOrderFormOptions,
+  fetchOrders,
+  updateOrderStatus,
+} from '@/services/api/orders';
+import type { DocumentPreviewRecord } from '@/types/documents';
+import type {
+  CreateOrderPayload,
+  OrderFormOptions,
+  OrderItemDraft,
+  OrderRecord,
+} from '@/types/orders';
 
 const pageSize = 8;
 
 function createEmptyItem(seed = Date.now()): OrderItemDraft {
   return {
     id: `item-${seed}`,
-    sku: '',
-    productName: '',
+    productId: '',
     quantity: '',
     unitPrice: '',
   };
@@ -28,26 +55,8 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试。';
 }
 
-function formatOrderDateTime(value: string) {
-  if (!value) {
-    return '-';
-  }
-
-  const normalized = value.includes('T') ? value : `${value}T00:00:00`;
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
+function productOptionLabel(name: string, sku: string, stock: number) {
+  return `${name} / ${sku} / 库存 ${stock}`;
 }
 
 export function OrderManagement() {
@@ -57,16 +66,16 @@ export function OrderManagement() {
   const canCreateOrders = hasPermission('orders.create');
   const canDeleteOrders = isSuperAdmin;
   const [orders, setOrders] = useState<OrderRecord[]>([]);
-  const [selectedOrder, setSelectedOrder] = useState<OrderDetailRecord | null>(null);
-  const [isDetailLoading, setIsDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState('');
+  const [formOptions, setFormOptions] = useState<OrderFormOptions>({ customers: [], products: [] });
+  const [previewDocuments, setPreviewDocuments] = useState<DocumentPreviewRecord[]>([]);
+  const [previewInitialId, setPreviewInitialId] = useState('');
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [orderDateFilter, setOrderDateFilter] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [customerName, setCustomerName] = useState('');
-  const [orderChannel, setOrderChannel] = useState('门店补货');
+  const [customerId, setCustomerId] = useState('');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
   const [remark, setRemark] = useState('');
   const [items, setItems] = useState<OrderItemDraft[]>([createEmptyItem()]);
@@ -78,14 +87,36 @@ export function OrderManagement() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [busyActionId, setBusyActionId] = useState('');
 
-  const totalAmount = useMemo(
-    () => items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0),
-    [items]
+  const customerMap = useMemo(
+    () => new Map(formOptions.customers.map((customer) => [customer.id, customer])),
+    [formOptions.customers],
+  );
+  const productMap = useMemo(
+    () => new Map(formOptions.products.map((product) => [product.productId, product])),
+    [formOptions.products],
+  );
+  const selectedCustomer = useMemo(
+    () => customerMap.get(customerId) || null,
+    [customerId, customerMap],
+  );
+  const customerOptions = useMemo(
+    () =>
+      formOptions.customers.map((customer) => ({
+        value: customer.id,
+        label: customer.name,
+        keywords: [customer.name, customer.channelPreference],
+        description: customer.channelPreference ? `渠道：${customer.channelPreference}` : undefined,
+      })),
+    [formOptions.customers],
   );
 
+  const totalAmount = useMemo(
+    () => items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0),
+    [items],
+  );
   const totalQuantity = useMemo(
     () => items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
-    [items]
+    [items],
   );
 
   const filteredOrders = useMemo(() => {
@@ -117,13 +148,34 @@ export function OrderManagement() {
     setCurrentPage(1);
   }, [searchTerm, statusFilter, orderDateFilter]);
 
+  const loadFormOptions = async () => {
+    if (!canCreateOrders) {
+      setFormOptions({ customers: [], products: [] });
+      return { customers: [], products: [] } satisfies OrderFormOptions;
+    }
+
+    const response = await fetchOrderFormOptions();
+    setFormOptions(response.data);
+    return response.data;
+  };
+
   const loadOrders = async () => {
+    if (canCreateOrders) {
+      const [ordersResponse] = await Promise.all([fetchOrders(), loadFormOptions()]);
+      setOrders(ordersResponse.data);
+      return;
+    }
+
+    const response = await fetchOrders();
+    setOrders(response.data);
+  };
+
+  const loadPageData = async () => {
     setIsLoading(true);
     setPageError('');
 
     try {
-      const response = await fetchOrders();
-      setOrders(response.data);
+      await loadOrders();
     } catch (error) {
       setPageError(getErrorMessage(error));
     } finally {
@@ -132,12 +184,21 @@ export function OrderManagement() {
   };
 
   useEffect(() => {
-    void loadOrders();
-  }, []);
+    void loadPageData();
+  }, [canCreateOrders]);
+
+  const openPreview = (documents: DocumentPreviewRecord[], activeId?: string) => {
+    if (documents.length === 0) {
+      return;
+    }
+
+    setPreviewDocuments(documents);
+    setPreviewInitialId(activeId || documents[0]?.id || '');
+    setIsPreviewOpen(true);
+  };
 
   const resetForm = () => {
-    setCustomerName('');
-    setOrderChannel('门店补货');
+    setCustomerId('');
     setExpectedDeliveryDate('');
     setRemark('');
     setItems([createEmptyItem(Date.now())]);
@@ -153,7 +214,31 @@ export function OrderManagement() {
   };
 
   const handleItemChange = (id: string, field: keyof Omit<OrderItemDraft, 'id'>, value: string) => {
-    setItems((current) => current.map((item) => (item.id === id ? { ...item, [field]: value } : item)));
+    setItems((current) =>
+      current.map((item) => {
+        if (item.id !== id) {
+          return item;
+        }
+
+        if (field === 'productId') {
+          const product = productMap.get(value);
+          return {
+            ...item,
+            productId: value,
+            unitPrice: product ? String(product.salePrice) : '',
+          };
+        }
+
+        return { ...item, [field]: value };
+      }),
+    );
+  };
+
+  const getSelectableProducts = (draft: OrderItemDraft) => {
+    const selectedProductIds = new Set(
+      items.filter((item) => item.id !== draft.id).map((item) => item.productId).filter(Boolean),
+    );
+    return formOptions.products.filter((product) => !selectedProductIds.has(product.productId) || product.productId === draft.productId);
   };
 
   const handleResetFilters = () => {
@@ -165,20 +250,15 @@ export function OrderManagement() {
 
   const handleReloadOrders = async () => {
     setActionMessage('');
-    await loadOrders();
+    await loadPageData();
   };
 
   const handleViewDetail = async (id: string) => {
-    setIsDetailLoading(true);
-    setDetailError('');
-
     try {
       const response = await fetchOrderDetail(id);
-      setSelectedOrder(response.data);
+      openPreview([buildOrderDocument(response.data)], response.data.id);
     } catch (error) {
-      setDetailError(getErrorMessage(error));
-    } finally {
-      setIsDetailLoading(false);
+      setPageError(getErrorMessage(error));
     }
   };
 
@@ -188,21 +268,41 @@ export function OrderManagement() {
     setFormError('');
 
     try {
-      const response = await fetchOrderDetail(id);
-      const detail = response.data;
-      setCustomerName(detail.customerName);
-      setOrderChannel(detail.orderChannel);
-      setExpectedDeliveryDate(detail.expectedDeliveryDate);
-      setRemark(detail.remark || '');
-      setItems(
-        detail.items.map((item, index) => ({
+      const [detailResponse, options] = await Promise.all([
+        fetchOrderDetail(id),
+        canCreateOrders ? loadFormOptions() : Promise.resolve(formOptions),
+      ]);
+      const detail = detailResponse.data;
+      const customer = options.customers.find((item) => item.name === detail.customerName);
+      if (!customer) {
+        throw new Error(`客户 ${detail.customerName} 已不在可选客户列表中，无法直接复制。`);
+      }
+
+      const missingProducts: string[] = [];
+      const nextItems = detail.items.reduce<OrderItemDraft[]>((result, item, index) => {
+        const matchedProduct = options.products.find((product) => product.sku === item.sku);
+        if (!matchedProduct) {
+          missingProducts.push(item.sku);
+          return result;
+        }
+
+        result.push({
           id: `duplicate-${detail.id}-${index}`,
-          sku: item.sku,
-          productName: item.productName,
+          productId: matchedProduct.productId,
           quantity: String(item.quantity),
           unitPrice: String(item.unitPrice),
-        }))
-      );
+        });
+        return result;
+      }, []);
+
+      if (missingProducts.length > 0 || nextItems.length === 0) {
+        throw new Error(`以下商品已不在可选库存列表中：${missingProducts.join('、')}`);
+      }
+
+      setCustomerId(customer.id);
+      setExpectedDeliveryDate(detail.expectedDeliveryDate);
+      setRemark(detail.remark || '');
+      setItems(nextItems);
       setIsCreateOpen(true);
       setFormSuccess(`已载入订单 ${detail.id}，你可以修改后重新提交。`);
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -226,8 +326,7 @@ export function OrderManagement() {
     try {
       const response = await updateOrderStatus(orderId, { status: nextStatus });
       setActionMessage(response.message || '订单状态已更新。');
-      setSelectedOrder(response.data);
-      await loadOrders();
+      await loadPageData();
     } catch (error) {
       setPageError(getErrorMessage(error));
     } finally {
@@ -244,8 +343,8 @@ export function OrderManagement() {
       return;
     }
 
-    if (!customerName.trim()) {
-      setFormError('请先填写客户或门店名称。');
+    if (!customerId) {
+      setFormError('请先从客户列表中选择客户。');
       return;
     }
 
@@ -260,28 +359,31 @@ export function OrderManagement() {
     }
 
     const hasInvalidItem = items.some((item) => {
-      return !item.sku.trim() || !item.productName.trim() || Number(item.quantity) <= 0 || Number(item.unitPrice) <= 0;
+      return !item.productId || Number(item.quantity) <= 0 || !Number.isInteger(Number(item.quantity)) || Number(item.unitPrice) <= 0;
     });
-
     if (hasInvalidItem) {
-      setFormError('请完整填写每条商品明细，且数量和单价必须大于 0。');
+      setFormError('请完整填写每条商品明细，且数量为正整数、单价必须大于 0。');
+      return;
+    }
+
+    const uniqueProductIds = new Set(items.map((item) => item.productId));
+    if (uniqueProductIds.size !== items.length) {
+      setFormError('同一张销售订单中不能重复选择相同商品。');
       return;
     }
 
     const payload: CreateOrderPayload = {
-      customerName: customerName.trim(),
-      orderChannel,
+      customerId,
       expectedDeliveryDate,
       remark: remark.trim(),
       items: items.map((item) => ({
-        sku: item.sku.trim(),
-        productName: item.productName.trim(),
+        productId: item.productId,
         quantity: Number(item.quantity),
         unitPrice: Number(item.unitPrice),
       })),
     };
 
-    if (!(await confirm(`确认创建订单并写入系统？\n客户：${payload.customerName}\n金额：${formatCurrency(totalAmount)}`))) {
+    if (!(await confirm(`确认创建订单并写入系统？\n客户：${selectedCustomer?.name || '-'}\n金额：${formatCurrency(totalAmount)}`))) {
       return;
     }
 
@@ -292,6 +394,8 @@ export function OrderManagement() {
       const response = await createOrder(payload);
       setOrders((current) => [response.data, ...current]);
       setFormSuccess(`订单 ${response.data.id} 已创建，并已写入后端订单列表。`);
+      const detailResponse = await fetchOrderDetail(response.data.id);
+      openPreview([buildOrderDocument(detailResponse.data)], detailResponse.data.id);
       resetForm();
       setIsCreateOpen(false);
     } catch (error) {
@@ -307,11 +411,7 @@ export function OrderManagement() {
       return;
     }
 
-    if (
-      !(await confirm(
-        `确认删除订单 ${orderId}？\n将回滚库存并清理关联发货/收款记录。`,
-      ))
-    ) {
+    if (!(await confirm(`确认删除订单 ${orderId}？\n将回滚库存并清理关联发货/收款记录。`))) {
       return;
     }
 
@@ -322,10 +422,10 @@ export function OrderManagement() {
     try {
       const response = await deleteOrder(orderId, { aggressive: true });
       setActionMessage(response.message || '订单已删除。');
-      if (selectedOrder?.id === orderId) {
-        setSelectedOrder(null);
+      if (previewDocuments.some((item) => item.id === orderId)) {
+        setIsPreviewOpen(false);
       }
-      await loadOrders();
+      await loadPageData();
     } catch (error) {
       setPageError(getErrorMessage(error));
     } finally {
@@ -334,22 +434,23 @@ export function OrderManagement() {
   };
 
   const handleFilterCustomer = (customer: string) => {
-    const customerName = customer.split(' / ')[0]?.trim() || customer;
-    setSearchTerm(customerName);
+    const normalizedCustomer = customer.split(' / ')[0]?.trim() || customer;
+    setSearchTerm(normalizedCustomer);
     setCurrentPage(1);
-    setActionMessage(`已按客户 ${customerName} 筛选订单列表。`);
+    setActionMessage(`已按客户 ${normalizedCustomer} 筛选订单列表。`);
   };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-gray-900">客户订单管理</h2>
-          <p className="text-sm text-gray-500 mt-1">订单列表、详情、状态流转和复制建单都已接入真实接口。</p>
+          <p className="mt-1 text-sm text-gray-500">订单列表、真实单据预览和选择式建单已经合并到同一页。</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => void handleReloadOrders()} disabled={isLoading}>
-            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} /> 刷新列表
+            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            刷新列表
           </Button>
           <Button
             className="bg-blue-600 hover:bg-blue-700 shadow-sm"
@@ -367,218 +468,194 @@ export function OrderManagement() {
         </div>
       </div>
 
-      {pageError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">订单列表加载失败：{pageError}</div>}
-      {actionMessage && <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{actionMessage}</div>}
-      {formSuccess && <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{formSuccess}</div>}
+      {pageError ? <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">订单列表加载失败：{pageError}</div> : null}
+      {actionMessage ? <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{actionMessage}</div> : null}
+      {formSuccess ? <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{formSuccess}</div> : null}
 
-      {isCreateOpen && (
-        <Card className="border-blue-200 shadow-sm overflow-hidden">
+      {isCreateOpen ? (
+        <Card className="overflow-hidden border-blue-200 shadow-sm">
           <CardHeader className="border-b border-blue-100 bg-blue-50/60">
             <CardTitle className="flex items-center gap-2 text-blue-900">
               <PackagePlus className="h-5 w-5 text-blue-600" />
               新建销售订单表单
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-6 space-y-6">
+          <CardContent className="space-y-6 p-6">
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">客户 / 门店名称</label>
-                <Input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="例如：华东门店" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">订单渠道</label>
-                <select value={orderChannel} onChange={(e) => setOrderChannel(e.target.value)} className="h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  <option value="门店补货">门店补货</option>
-                  <option value="线上商城">线上商城</option>
-                  <option value="企业团购">企业团购</option>
+                <label className="text-sm font-medium text-gray-700">客户</label>
+                <SearchableSelect
+                  value={customerId}
+                  onChange={setCustomerId}
+                  options={customerOptions}
+                  placeholder="请选择客户"
+                  searchPlaceholder="输入客户名称或渠道检索"
+                  emptyText="没有匹配的客户"
+                />
+                <select
+                  value={customerId}
+                  onChange={(event) => setCustomerId(event.target.value)}
+                  className="hidden"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                >
+                  <option value="">请选择客户</option>
+                  {formOptions.customers.map((customer) => (
+                    <option key={customer.id} value={customer.id}>
+                      {customer.name}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">期望交付日期</label>
-                <Input type="date" value={expectedDeliveryDate} onChange={(e) => setExpectedDeliveryDate(e.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">订单摘要</label>
-                <div className="h-10 rounded-md border border-gray-200 bg-gray-50 px-3 text-sm text-gray-600 flex items-center">
-                  {items.length} 条明细 / 共 {totalQuantity || 0} 件 / {formatCurrency(totalAmount || 0)}
+                <label className="text-sm font-medium text-gray-700">订单渠道</label>
+                <div className="flex h-10 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm text-gray-600">
+                  {selectedCustomer?.channelPreference || '选择客户后自动带出'}
                 </div>
               </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">期望交付日期</label>
+                <Input type="date" value={expectedDeliveryDate} onChange={(event) => setExpectedDeliveryDate(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">备注</label>
+                <Input value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="可填写订单备注" />
+              </div>
             </div>
+
+            {canCreateOrders && (formOptions.customers.length === 0 || formOptions.products.length === 0) ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                当前可选客户或商品为空，请先检查基础资料和库存是否已准备完成。
+              </div>
+            ) : null}
 
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold text-gray-900">商品明细</h3>
                 <Button variant="outline" size="sm" className="border-blue-200 text-blue-700 hover:bg-blue-50" onClick={handleAddItem}>
-                  <Plus className="mr-2 h-4 w-4" /> 添加商品行
+                  <Plus className="mr-2 h-4 w-4" />
+                  添加商品行
                 </Button>
               </div>
 
               <div className="space-y-3">
-                {items.length === 0 && <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-500 text-center">当前没有商品明细，请先添加商品行。</div>}
-                {items.map((item, index) => (
-                  <div key={item.id} className="grid gap-3 rounded-xl border border-gray-200 bg-gray-50/60 p-4 md:grid-cols-12">
-                    <div className="md:col-span-2 space-y-2">
-                      <label className="text-xs font-medium text-gray-600">SKU 编码</label>
-                      <Input value={item.sku} onChange={(e) => handleItemChange(item.id, 'sku', e.target.value)} placeholder={`SKU-${index + 1001}`} />
+                {items.map((item) => {
+                  const selectedProduct = productMap.get(item.productId) || null;
+
+                  return (
+                    <div key={item.id} className="grid gap-3 rounded-xl border border-gray-200 bg-gray-50/60 p-4 md:grid-cols-12">
+                      <div className="space-y-2 md:col-span-5">
+                        <label className="text-xs font-medium text-gray-600">商品名称</label>
+                        <SearchableSelect
+                          value={item.productId}
+                          onChange={(value) => handleItemChange(item.id, 'productId', value)}
+                          options={getSelectableProducts(item).map((product) => ({
+                            value: product.productId,
+                            label: product.name,
+                            keywords: [product.name, product.sku, product.status, String(product.currentStock)],
+                            description: productOptionLabel(product.name, product.sku, product.currentStock),
+                          }))}
+                          placeholder="请选择库存商品"
+                          searchPlaceholder="输入商品名、SKU 或库存检索"
+                          emptyText="没有匹配的库存商品"
+                        />
+                        <select
+                          value={item.productId}
+                          onChange={(event) => handleItemChange(item.id, 'productId', event.target.value)}
+                          className="hidden"
+                          tabIndex={-1}
+                          aria-hidden="true"
+                        >
+                          <option value="">请选择库存商品</option>
+                          {getSelectableProducts(item).map((product) => (
+                            <option key={product.productId} value={product.productId}>
+                              {productOptionLabel(product.name, product.sku, product.currentStock)}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="text-xs text-gray-500">
+                          {selectedProduct ? `当前库存 ${selectedProduct.currentStock} · 状态 ${selectedProduct.status}` : '选择商品后自动显示库存状态'}
+                        </div>
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <label className="text-xs font-medium text-gray-600">SKU 编码</label>
+                        <div className="flex h-10 items-center rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-700">
+                          {selectedProduct?.sku || '自动补全'}
+                        </div>
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <label className="text-xs font-medium text-gray-600">数量</label>
+                        <Input type="number" min="1" step="1" value={item.quantity} onChange={(event) => handleItemChange(item.id, 'quantity', event.target.value)} placeholder="0" />
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <label className="text-xs font-medium text-gray-600">销售单价</label>
+                        <Input type="number" min="0" step="0.01" value={item.unitPrice} onChange={(event) => handleItemChange(item.id, 'unitPrice', event.target.value)} placeholder="0.00" />
+                      </div>
+                      <div className="space-y-2 md:col-span-1">
+                        <label className="text-xs font-medium text-gray-600">操作</label>
+                        <Button type="button" variant="outline" className="w-full border-red-200 text-red-600 hover:bg-red-50" onClick={() => handleRemoveItem(item.id)} disabled={items.length === 1}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
-                    <div className="md:col-span-4 space-y-2">
-                      <label className="text-xs font-medium text-gray-600">商品名称</label>
-                      <Input value={item.productName} onChange={(e) => handleItemChange(item.id, 'productName', e.target.value)} placeholder="例如：维达抽纸 24包" />
-                    </div>
-                    <div className="md:col-span-2 space-y-2">
-                      <label className="text-xs font-medium text-gray-600">数量</label>
-                      <Input type="number" min="1" value={item.quantity} onChange={(e) => handleItemChange(item.id, 'quantity', e.target.value)} placeholder="0" />
-                    </div>
-                    <div className="md:col-span-2 space-y-2">
-                      <label className="text-xs font-medium text-gray-600">单价</label>
-                      <Input type="number" min="0" step="0.01" value={item.unitPrice} onChange={(e) => handleItemChange(item.id, 'unitPrice', e.target.value)} placeholder="0.00" />
-                    </div>
-                    <div className="md:col-span-2 space-y-2">
-                      <label className="text-xs font-medium text-gray-600">操作</label>
-                      <Button type="button" variant="outline" className="w-full border-red-200 text-red-600 hover:bg-red-50" onClick={() => handleRemoveItem(item.id)}>
-                        <Trash2 className="mr-2 h-4 w-4" /> 删除
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
             <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">备注</label>
-                <textarea value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="可填写促销活动、门店优先级、配送要求等备注信息。" className="min-h-28 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
-              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+              <div />
+              <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
                 <h4 className="font-semibold text-gray-900">提交前检查</h4>
-                <div className="text-sm text-gray-600 space-y-2">
-                  <div className="flex items-center justify-between"><span>客户 / 门店</span><span className="font-medium text-gray-900">{customerName || '未填写'}</span></div>
-                  <div className="flex items-center justify-between"><span>订单渠道</span><span className="font-medium text-gray-900">{orderChannel}</span></div>
+                <div className="space-y-2 text-sm text-gray-600">
+                  <div className="flex items-center justify-between"><span>客户</span><span className="font-medium text-gray-900">{selectedCustomer?.name || '未选择'}</span></div>
+                  <div className="flex items-center justify-between"><span>订单渠道</span><span className="font-medium text-gray-900">{selectedCustomer?.channelPreference || '-'}</span></div>
                   <div className="flex items-center justify-between"><span>商品行数</span><span className="font-medium text-gray-900">{items.length}</span></div>
                   <div className="flex items-center justify-between"><span>总数量</span><span className="font-medium text-gray-900">{totalQuantity}</span></div>
                   <div className="flex items-center justify-between"><span>订单金额</span><span className="font-semibold text-blue-700">{formatCurrency(totalAmount || 0)}</span></div>
+                  <div className="flex items-start justify-between gap-3"><span>备注</span><span className="text-right font-medium text-gray-900">{remark || '-'}</span></div>
                 </div>
               </div>
             </div>
 
-            {formError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{formError}</div>}
+            {formError ? <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{formError}</div> : null}
 
-            <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
+            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => { resetForm(); setIsCreateOpen(false); setFormSuccess(''); }}>
                 取消
               </Button>
               <Button variant="outline" className="border-blue-200 text-blue-700 hover:bg-blue-50" onClick={resetForm} disabled={isSubmitting}>
                 重置表单
               </Button>
-              <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleSubmit()} disabled={isSubmitting || !canCreateOrders} title={!canCreateOrders ? '当前角色没有创建订单权限' : undefined}>
+              <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleSubmit()} disabled={isSubmitting || !canCreateOrders}>
                 {isSubmitting ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
                 提交订单
               </Button>
             </div>
           </CardContent>
         </Card>
-      )}
-
-      {(selectedOrder || isDetailLoading || detailError) && (
-        <Card className="border-gray-200 shadow-sm">
-          <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
-            <div className="flex items-center justify-between gap-4">
-              <CardTitle className="text-lg font-semibold text-gray-800">订单详情</CardTitle>
-              <Button variant="ghost" size="sm" onClick={() => { setSelectedOrder(null); setDetailError(''); }}>
-                关闭
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-6">
-            {isDetailLoading && <div className="text-sm text-gray-500">正在加载订单详情...</div>}
-            {detailError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{detailError}</div>}
-            {selectedOrder && !isDetailLoading && (
-              <div className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">客户</div><div className="text-sm font-semibold text-gray-900 mt-1">{selectedOrder.customerName}</div><div className="text-xs text-gray-500 mt-1">{selectedOrder.orderChannel}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">订单状态</div><div className="text-sm font-semibold text-gray-900 mt-1">{selectedOrder.status}</div><div className="text-xs text-gray-500 mt-1">库存：{selectedOrder.stockStatus}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">订单金额</div><div className="text-sm font-semibold text-gray-900 mt-1">{formatCurrency(selectedOrder.totalAmount)}</div><div className="text-xs text-gray-500 mt-1">{selectedOrder.itemCount} 件商品</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">交付日期</div><div className="text-sm font-semibold text-gray-900 mt-1">{selectedOrder.expectedDeliveryDate}</div><div className="text-xs text-gray-500 mt-1">下单时间：{formatOrderDateTime(selectedOrder.createdAt || selectedOrder.orderDate)}</div></div>
-                </div>
-
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <div>
-                    <h3 className="text-sm font-semibold text-gray-900 mb-3">商品明细</h3>
-                    <div className="space-y-3">
-                      {selectedOrder.items.map((item) => (
-                        <div key={item.id} className="rounded-lg border border-gray-200 p-4">
-                          <div className="flex items-center justify-between gap-4">
-                            <div>
-                              <div className="text-sm font-semibold text-gray-900">{item.productName}</div>
-                              <div className="text-xs text-gray-500 mt-1">{item.sku}</div>
-                            </div>
-                            <div className="text-right text-sm text-gray-700">
-                              <div>{item.quantity} × {formatCurrency(item.unitPrice)}</div>
-                              <div className="font-semibold text-gray-900 mt-1">{formatCurrency(item.lineAmount)}</div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="rounded-lg border border-gray-200 p-4">
-                      <h3 className="text-sm font-semibold text-gray-900 mb-3">发货信息</h3>
-                      {selectedOrder.shipping ? (
-                        <div className="space-y-2 text-sm text-gray-700">
-                          <div>发货单：{selectedOrder.shipping.deliveryId}</div>
-                          <div>状态：{selectedOrder.shipping.shipmentStatus}</div>
-                          <div>物流：{selectedOrder.shipping.courier || '-'}</div>
-                          <div>运单号：{selectedOrder.shipping.trackingNo || '-'}</div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-gray-500">尚未生成发货记录。</div>
-                      )}
-                    </div>
-
-                    <div className="rounded-lg border border-gray-200 p-4">
-                      <h3 className="text-sm font-semibold text-gray-900 mb-3">应收信息</h3>
-                      {selectedOrder.receivable ? (
-                        <div className="space-y-2 text-sm text-gray-700">
-                          <div>应收单：{selectedOrder.receivable.receivableId}</div>
-                          <div>应收金额：{formatCurrency(selectedOrder.receivable.amountDue)}</div>
-                          <div>已收金额：{formatCurrency(selectedOrder.receivable.amountPaid)}</div>
-                          <div>待收金额：{formatCurrency(selectedOrder.receivable.remainingAmount)}</div>
-                          <div>到期日：{selectedOrder.receivable.dueDate}</div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-gray-500">尚未生成应收记录。</div>
-                      )}
-                    </div>
-
-                    {selectedOrder.remark && <div className="rounded-lg border border-gray-200 p-4"><h3 className="text-sm font-semibold text-gray-900 mb-2">备注</h3><div className="text-sm text-gray-700">{selectedOrder.remark}</div></div>}
-                  </div>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      ) : null}
 
       <Card className="border-gray-200 shadow-sm">
-        <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
-          <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
-            <div className="flex flex-1 gap-4 w-full flex-wrap">
+        <CardHeader className="rounded-t-xl border-b border-gray-100 bg-gray-50/50 pb-3">
+          <div className="flex flex-col items-center justify-between gap-4 md:flex-row">
+            <div className="flex w-full flex-1 flex-wrap gap-4">
               <div className="relative w-full md:w-72">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500" />
-                <Input placeholder="搜索订单编号、客户名称..." className="pl-9 bg-white border-gray-300 focus-visible:ring-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                <Input placeholder="搜索订单编号、客户名称..." className="bg-white border-gray-300 pl-9 focus-visible:ring-blue-500" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
               </div>
-              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">所有状态</option>
                 <option value="待发货">待发货</option>
                 <option value="已发货">已发货</option>
                 <option value="已完成">已完成</option>
                 <option value="已取消">已取消</option>
               </select>
-              <Input type="date" value={orderDateFilter} onChange={(e) => setOrderDateFilter(e.target.value)} className="w-full md:w-auto bg-white border-gray-300 focus-visible:ring-blue-500" />
+              <Input type="date" value={orderDateFilter} onChange={(event) => setOrderDateFilter(event.target.value)} className="w-full md:w-auto bg-white border-gray-300 focus-visible:ring-blue-500" />
             </div>
-            <Button variant="outline" className="w-full md:w-auto border-gray-300 text-gray-700 hover:bg-gray-50" onClick={handleResetFilters}>重置筛选</Button>
+            <Button variant="outline" className="w-full border-gray-300 text-gray-700 hover:bg-gray-50 md:w-auto" onClick={handleResetFilters}>
+              重置筛选
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -591,97 +668,59 @@ export function OrderManagement() {
                 <TableHead className="font-semibold text-gray-900">订单金额</TableHead>
                 <TableHead className="font-semibold text-gray-900">状态</TableHead>
                 <TableHead className="font-semibold text-gray-900">库存状态</TableHead>
-                <TableHead className="font-semibold text-gray-900 text-right">商品件数</TableHead>
+                <TableHead className="text-right font-semibold text-gray-900">商品件数</TableHead>
                 <TableHead className="text-right font-semibold text-gray-900">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isLoading && <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载订单列表...</TableCell></TableRow>}
-              {!isLoading && filteredOrders.length === 0 && <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有订单记录。</TableCell></TableRow>}
-              {!isLoading && paginatedOrders.map((order) => (
-                <Fragment key={order.id}>
-                  <TableRow className="hover:bg-blue-50/30 transition-colors">
-                    <TableCell className="font-medium text-blue-600">{order.id}</TableCell>
-                    <TableCell className="text-gray-900">{order.customer}</TableCell>
-                    <TableCell className="text-gray-500">{order.date}</TableCell>
-                    <TableCell className="font-semibold text-gray-900">{order.amount}</TableCell>
-                    <TableCell>
-                      <Badge variant={order.status === '待发货' ? 'default' : order.status === '已发货' ? 'secondary' : order.status === '已完成' ? 'success' : 'outline'}>
-                        {order.status}
+              {isLoading ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载订单列表...</TableCell></TableRow> : null}
+              {!isLoading && filteredOrders.length === 0 ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有订单记录。</TableCell></TableRow> : null}
+              {!isLoading ? paginatedOrders.map((order) => (
+                <TableRow key={order.id} className="transition-colors hover:bg-blue-50/30">
+                  <TableCell className="font-medium text-blue-600">{order.id}</TableCell>
+                  <TableCell className="text-gray-900">{order.customer}</TableCell>
+                  <TableCell className="text-gray-500">{order.date}</TableCell>
+                  <TableCell className="font-semibold text-gray-900">{order.amount}</TableCell>
+                  <TableCell>
+                    <Badge variant={order.status === '待发货' ? 'default' : order.status === '已发货' ? 'secondary' : order.status === '已完成' ? 'success' : 'outline'}>
+                      {order.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {order.stockStatus !== '-' ? (
+                      <Badge
+                        variant={order.stockStatus === '部分缺货' ? 'destructive' : 'outline'}
+                        className={order.stockStatus === '库存充足' ? 'border-green-200 bg-green-50 text-green-600' : order.stockStatus === '待校验' ? 'border-amber-200 bg-amber-50 text-amber-700' : ''}
+                      >
+                        {order.stockStatus}
                       </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {order.stockStatus !== '-' ? (
-                        <Badge
-                          variant={order.stockStatus === '部分缺货' ? 'destructive' : 'outline'}
-                          className={order.stockStatus === '库存充足' ? 'text-green-600 border-green-200 bg-green-50' : order.stockStatus === '待校验' ? 'text-amber-700 border-amber-200 bg-amber-50' : ''}
-                        >
-                          {order.stockStatus}
-                        </Badge>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right font-medium text-gray-700">{order.itemCount}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="icon" className="text-gray-500 hover:text-blue-600 hover:bg-blue-50" onClick={() => void handleViewDetail(order.id)}>
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                        <RowActionMenu
-                          items={[
-                            {
-                              id: 'view-detail',
-                              label: '查看详情',
-                              icon: Eye,
-                              onSelect: () => void handleViewDetail(order.id),
-                            },
-                            {
-                              id: 'duplicate',
-                              label: busyActionId === order.id ? '正在载入...' : '复制建单',
-                              icon: CopyPlus,
-                              onSelect: () => void handlePrepareDuplicate(order.id),
-                              disabled: busyActionId === order.id || !canCreateOrders,
-                            },
-                            {
-                              id: 'filter-customer',
-                              label: '按该客户筛选',
-                              icon: Filter,
-                              onSelect: () => handleFilterCustomer(order.customer),
-                            },
-                            {
-                              id: 'complete',
-                              label: '标记完成',
-                              icon: CheckCircle2,
-                              onSelect: () => void handleOrderStatusUpdate(order.id, '已完成'),
-                              disabled: order.status !== '已发货' || busyActionId === order.id || !canCreateOrders,
-                            },
-                            {
-                              id: 'cancel',
-                              label: '取消订单',
-                              icon: Trash2,
-                              onSelect: () => void handleOrderStatusUpdate(order.id, '已取消'),
-                              disabled: order.status !== '待发货' || busyActionId === order.id || !canCreateOrders,
-                              tone: 'danger',
-                            },
-                            {
-                              id: 'delete-order',
-                              label: '删除订单',
-                              icon: X,
-                              onSelect: () => void handleDeleteOrder(order.id),
-                              disabled: busyActionId === order.id || !canDeleteOrders,
-                              tone: 'danger',
-                            },
-                          ]}
-                        />
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                </Fragment>
-              ))}
+                    ) : (
+                      <span className="text-gray-400">-</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right font-medium text-gray-700">{order.itemCount}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button variant="ghost" size="icon" className="text-gray-500 hover:bg-blue-50 hover:text-blue-600" onClick={() => void handleViewDetail(order.id)}>
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <RowActionMenu
+                        items={[
+                          { id: 'view-detail', label: '查看单据', icon: Eye, onSelect: () => void handleViewDetail(order.id) },
+                          { id: 'duplicate', label: busyActionId === order.id ? '正在载入...' : '复制建单', icon: CopyPlus, onSelect: () => void handlePrepareDuplicate(order.id), disabled: busyActionId === order.id || !canCreateOrders },
+                          { id: 'filter-customer', label: '按该客户筛选', icon: Filter, onSelect: () => handleFilterCustomer(order.customer) },
+                          { id: 'complete', label: '标记完成', icon: CheckCircle2, onSelect: () => void handleOrderStatusUpdate(order.id, '已完成'), disabled: order.status !== '已发货' || busyActionId === order.id || !canCreateOrders },
+                          { id: 'cancel', label: '取消订单', icon: Trash2, onSelect: () => void handleOrderStatusUpdate(order.id, '已取消'), disabled: order.status !== '待发货' || busyActionId === order.id || !canCreateOrders, tone: 'danger' },
+                          { id: 'delete-order', label: '删除订单', icon: X, onSelect: () => void handleDeleteOrder(order.id), disabled: busyActionId === order.id || !canDeleteOrders, tone: 'danger' },
+                        ]}
+                      />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )) : null}
             </TableBody>
           </Table>
-          <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/30 rounded-b-xl">
+          <div className="flex items-center justify-between rounded-b-xl border-t border-gray-100 bg-gray-50/30 px-6 py-4">
             <div className="text-sm text-gray-500">当前显示第 {currentPage} / {totalPages} 页，共 {filteredOrders.length} 条订单记录</div>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" className="border-gray-300 text-gray-700 hover:bg-gray-50" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => Math.max(page - 1, 1))}>
@@ -694,6 +733,8 @@ export function OrderManagement() {
           </div>
         </CardContent>
       </Card>
+
+      <DocumentPreviewModal documents={previewDocuments} isOpen={isPreviewOpen} initialActiveId={previewInitialId} onClose={() => setIsPreviewOpen(false)} />
       {confirmDialog}
     </div>
   );

@@ -4,6 +4,7 @@ import type {
   CreateOrderPayload,
   DeleteOrderResponse,
   OrderDetailRecord,
+  OrderFormOptions,
   OrderRecord,
   UpdateOrderStatusPayload,
 } from '@/types/orders';
@@ -14,6 +15,10 @@ export function fetchOrders() {
 
 export function fetchOrderDetail(id: string) {
   return apiClient.get<ApiEnvelope<OrderDetailRecord>>(`/orders/${id}`);
+}
+
+export function fetchOrderFormOptions() {
+  return apiClient.get<ApiEnvelope<OrderFormOptions>>('/orders/form-options');
 }
 
 export function createOrder(payload: CreateOrderPayload) {
