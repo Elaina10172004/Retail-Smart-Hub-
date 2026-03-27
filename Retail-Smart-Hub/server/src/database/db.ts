@@ -144,6 +144,30 @@ function initializeDatabase() {
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_product_warehouse ON inventory(product_id, warehouse_id);
 
+    CREATE TABLE IF NOT EXISTS warehouse_shelves (
+      id TEXT PRIMARY KEY,
+      warehouse_id TEXT NOT NULL,
+      shelf_code TEXT NOT NULL,
+      shelf_name TEXT NOT NULL,
+      tags TEXT,
+      capacity INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+      UNIQUE (warehouse_id, shelf_code)
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_shelf_stock (
+      id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+      warehouse_id TEXT NOT NULL,
+      shelf_id TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+      FOREIGN KEY (shelf_id) REFERENCES warehouse_shelves(id),
+      UNIQUE (product_id, warehouse_id, shelf_id)
+    );
+
     CREATE TABLE IF NOT EXISTS sales_orders (
       id TEXT PRIMARY KEY,
       customer_name TEXT NOT NULL,
@@ -459,6 +483,7 @@ function initializeDatabase() {
   `);
 
   ensureMasterDataStatusColumns();
+  ensureInboundShelfSchema();
   ensureAuthSecuritySchema();
   ensureAiPendingActionSchema();
   ensureSalesOrderTimeSchema();
@@ -469,6 +494,7 @@ function initializeDatabase() {
     ensureSalesOrderTimeSchema();
     ensureSalesOrderBusinessSchema();
     ensureDeliveryNotes();
+    ensureWarehouseShelfData();
     ensureAccessControlData();
     ensureAuthSecurityData();
     ensureCustomerProfiles();
@@ -480,6 +506,7 @@ function initializeDatabase() {
   ensureSalesOrderBusinessSchema();
   ensureDeliveryNotes();
   ensureFinanceDocuments();
+  ensureWarehouseShelfData();
   ensureAccessControlData();
   ensureAuthSecurityData();
   ensureCustomerProfiles();
@@ -493,6 +520,95 @@ function ensureMasterDataStatusColumns() {
   ensureColumnExists('products', 'status', "status TEXT NOT NULL DEFAULT 'active'");
   db.exec("UPDATE products SET status = 'active' WHERE status IS NULL OR TRIM(status) = ''");
   db.exec("UPDATE suppliers SET status = 'active' WHERE status IS NULL OR TRIM(status) = ''");
+}
+
+function ensureInboundShelfSchema() {
+  ensureColumnExists('receiving_note_items', 'inbound_qty', 'inbound_qty INTEGER NOT NULL DEFAULT 0');
+  ensureColumnExists('receiving_note_items', 'shelf_id', 'shelf_id TEXT');
+  db.exec(`
+    UPDATE receiving_note_items
+    SET inbound_qty = qualified_qty
+    WHERE inbound_qty IS NULL OR (inbound_qty = 0 AND qualified_qty > 0)
+  `);
+}
+
+function ensureWarehouseShelfData() {
+  const insertShelf = db.prepare(
+    'INSERT OR IGNORE INTO warehouse_shelves (id, warehouse_id, shelf_code, shelf_name, tags, capacity, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+
+  [
+    ['SHELF-WH-001-A01', 'WH-001', 'A01', '纸品主货架', '纸品,家庭清洁,高频', 420, 10],
+    ['SHELF-WH-001-A02', 'WH-001', 'A02', '洗护主货架', '洗护,日化,清洁', 360, 20],
+    ['SHELF-WH-001-A03', 'WH-001', 'A03', '食品饮料货架', '饮料,食品,快消', 520, 30],
+    ['SHELF-WH-001-A04', 'WH-001', 'A04', '综合补货货架', '综合,补货,整箱', 460, 40],
+    ['SHELF-WH-002-B01', 'WH-002', 'B01', '周转待发货架', '周转,待发货,电商', 320, 10],
+    ['SHELF-WH-002-B02', 'WH-002', 'B02', '饮料周转货架', '饮料,快消,周转', 380, 20],
+    ['SHELF-WH-002-B03', 'WH-002', 'B03', '纸品大件货架', '纸品,大件,周转', 340, 30],
+  ].forEach((row) => insertShelf.run(...row));
+
+  const shelfStockCount = getTableCount(db, 'inventory_shelf_stock');
+  if (shelfStockCount > 0) {
+    return;
+  }
+
+  const inventoryRows = db.prepare<{
+    productId: string;
+    warehouseId: string;
+    quantity: number;
+    productName: string;
+    category: string;
+  }>(`
+    SELECT
+      i.product_id as productId,
+      i.warehouse_id as warehouseId,
+      i.current_stock as quantity,
+      p.name as productName,
+      p.category as category
+    FROM inventory i
+    JOIN products p ON p.id = i.product_id
+    WHERE i.current_stock > 0
+    ORDER BY p.sku ASC
+  `).all();
+
+  if (inventoryRows.length === 0) {
+    return;
+  }
+
+  const shelfByWarehouse = new Map<string, string[]>([
+    ['WH-001', ['SHELF-WH-001-A01', 'SHELF-WH-001-A02', 'SHELF-WH-001-A03', 'SHELF-WH-001-A04']],
+    ['WH-002', ['SHELF-WH-002-B01', 'SHELF-WH-002-B02', 'SHELF-WH-002-B03']],
+  ]);
+
+  const pickShelfId = (productName: string, category: string, warehouseId: string) => {
+    const normalized = `${productName} ${category}`;
+    const candidates = shelfByWarehouse.get(warehouseId) || shelfByWarehouse.get('WH-001') || [];
+    if (normalized.includes('纸')) {
+      return candidates.find((item) => item.endsWith('A01') || item.endsWith('B03')) || candidates[0];
+    }
+    if (normalized.includes('洗') || normalized.includes('清') || normalized.includes('护')) {
+      return candidates.find((item) => item.endsWith('A02')) || candidates[0];
+    }
+    if (normalized.includes('饮') || normalized.includes('食') || normalized.includes('零')) {
+      return candidates.find((item) => item.endsWith('A03') || item.endsWith('B02')) || candidates[0];
+    }
+    return candidates[candidates.length - 1] || 'SHELF-WH-001-A04';
+  };
+
+  const insertShelfStock = db.prepare(
+    'INSERT OR IGNORE INTO inventory_shelf_stock (id, product_id, warehouse_id, shelf_id, quantity) VALUES (?, ?, ?, ?, ?)',
+  );
+
+  inventoryRows.forEach((row) => {
+    const shelfId = pickShelfId(row.productName, row.category, row.warehouseId);
+    insertShelfStock.run(
+      nextDocumentId('inventory_shelf_stock', 'SLT'),
+      row.productId,
+      row.warehouseId,
+      shelfId,
+      row.quantity,
+    );
+  });
 }
 
 function ensureAuthSecuritySchema() {

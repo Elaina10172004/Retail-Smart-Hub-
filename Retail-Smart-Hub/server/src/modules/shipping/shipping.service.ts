@@ -1,6 +1,7 @@
 ﻿import { appendAuditLog, appendInventoryMovement, db } from '../../database/db';
 import { currentDateString } from '../../shared/format';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
+import { allocateOutboundFromShelves } from '../inventory/inventory-shelf.service';
 
 export type ShippingStatus = '待发货' | '已发货';
 export type ShipmentStockStatus = '库存充足' | '待补货' | '-';
@@ -252,6 +253,7 @@ export function dispatchShipment(deliveryId: string) {
         item.productId,
         DEFAULT_WAREHOUSE_ID
       );
+      allocateOutboundFromShelves(item.productId, DEFAULT_WAREHOUSE_ID, item.quantity);
 
       appendInventoryMovement({
         productId: item.productId,

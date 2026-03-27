@@ -8,6 +8,7 @@ import {
   getInventoryAlerts,
   getInventoryDetail,
   getInventoryOverview,
+  listInventoryShelves,
   listInventory,
   type InventoryAdjustmentPayload,
 } from './inventory.service';
@@ -31,6 +32,10 @@ inventoryRouter.get('/overview', requirePermission('inventory.view'), (_req, res
 
 inventoryRouter.get('/alerts', requirePermission('inventory.view'), (_req, res) => {
   return ok(res, getInventoryAlerts());
+});
+
+inventoryRouter.get('/shelves', requirePermission('inventory.view'), (_req, res) => {
+  return ok(res, listInventoryShelves());
 });
 
 inventoryRouter.get('/', requirePermission('inventory.view'), (_req, res) => {

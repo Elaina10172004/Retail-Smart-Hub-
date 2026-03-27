@@ -1,5 +1,6 @@
 ﻿import { appendAuditLog, appendInventoryMovement, db } from '../../database/db';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
+import { getProductShelfPlacements, getShelfUsageRate, listWarehouseShelves, rebalanceShelfStock } from './inventory-shelf.service';
 export type InventoryStatus = '正常' | '预警' | '缺货';
 
 export interface InventoryItem {
@@ -10,6 +11,7 @@ export interface InventoryItem {
   safeStock: number;
   transitStock: number;
   status: InventoryStatus;
+  shelfSummary: string;
 }
 
 export interface InventoryAlert {
@@ -28,6 +30,8 @@ export interface InventoryOverview {
   shortageCount: number;
   warningCount: number;
   totalSkus: number;
+  totalShelfCount: number;
+  availableShelfCount: number;
 }
 
 export interface InventoryWarehouseStock {
@@ -36,6 +40,32 @@ export interface InventoryWarehouseStock {
   locationCode: string;
   currentStock: number;
   reservedStock: number;
+}
+
+export interface InventoryShelfPlacement {
+  shelfId: string;
+  warehouseId: string;
+  warehouseName: string;
+  shelfCode: string;
+  shelfName: string;
+  tags: string[];
+  quantity: number;
+  capacity: number;
+  remainingCapacity: number;
+}
+
+export interface InventoryShelfOverviewRecord {
+  shelfId: string;
+  warehouseId: string;
+  warehouseName: string;
+  shelfCode: string;
+  shelfName: string;
+  tags: string[];
+  capacity: number;
+  usedQuantity: number;
+  remainingCapacity: number;
+  itemCount: number;
+  status: '空闲' | '可用' | '紧张' | '满位';
 }
 
 export interface InventoryMovementRecord {
@@ -54,6 +84,7 @@ export interface InventoryDetailRecord extends InventoryItem {
   preferredSupplier: string;
   leadTimeDays: number;
   warehouses: InventoryWarehouseStock[];
+  shelfPlacements: InventoryShelfPlacement[];
   recentMovements: InventoryMovementRecord[];
 }
 
@@ -125,7 +156,23 @@ function baseInventoryRows() {
   `).all();
 }
 
+function buildShelfSummaryMap() {
+  const rows = db.prepare<{ productId: string; shelfSummary: string }>(`
+    SELECT
+      iss.product_id as productId,
+      GROUP_CONCAT(ws.shelf_code, ' / ') as shelfSummary
+    FROM inventory_shelf_stock iss
+    JOIN warehouse_shelves ws ON ws.id = iss.shelf_id
+    WHERE iss.quantity > 0
+    GROUP BY iss.product_id
+  `).all();
+
+  return new Map(rows.map((row) => [row.productId, row.shelfSummary]));
+}
+
 export function listInventory() {
+  const shelfSummaryMap = buildShelfSummaryMap();
+
   return baseInventoryRows().map((row) => ({
     id: row.sku,
     name: row.name,
@@ -134,6 +181,7 @@ export function listInventory() {
     safeStock: row.safeStock,
     transitStock: row.transitStock,
     status: buildStatus(row.currentStock, row.safeStock),
+    shelfSummary: shelfSummaryMap.get(row.productId) || '-',
   }));
 }
 
@@ -191,6 +239,7 @@ export function getInventoryDetail(sku: string): InventoryDetailRecord | null {
     ORDER BY occurred_at DESC, id DESC
     LIMIT 24
   `).all(baseRow.productId);
+  const shelfPlacements = getProductShelfPlacements(baseRow.productId);
 
   const recentMovements: InventoryMovementRecord[] = movementRows.map((item) => {
     let type: InventoryMovementRecord['type'] = '盘点';
@@ -227,12 +276,14 @@ export function getInventoryDetail(sku: string): InventoryDetailRecord | null {
     safeStock: baseRow.safeStock,
     transitStock: baseRow.transitStock,
     status: buildStatus(baseRow.currentStock, baseRow.safeStock),
+    shelfSummary: shelfPlacements.map((item) => item.shelfCode).join(' / ') || '-',
     unit: baseRow.unit,
     salePrice: baseRow.salePrice,
     costPrice: baseRow.costPrice,
     preferredSupplier: baseRow.supplierName || '-',
     leadTimeDays: baseRow.leadTimeDays ?? 0,
     warehouses: warehouseRows,
+    shelfPlacements,
     recentMovements,
   };
 }
@@ -254,6 +305,7 @@ export function getInventoryAlerts() {
 
 export function getInventoryOverview(): InventoryOverview {
   const rows = baseInventoryRows();
+  const shelves = listWarehouseShelves();
   const totals = rows.reduce(
     (acc, row) => {
       acc.totalInventoryValue += row.currentStock * row.costPrice;
@@ -269,8 +321,7 @@ export function getInventoryOverview(): InventoryOverview {
     { totalInventoryValue: 0, totalCurrentStock: 0, shortageCount: 0, warningCount: 0 }
   );
 
-  const totalCapacity = db.prepare<{ totalCapacity: number }>('SELECT COALESCE(SUM(capacity), 0) as totalCapacity FROM warehouses').get()?.totalCapacity ?? 0;
-  const capacityUsageRate = totalCapacity > 0 ? Math.min((totals.totalCurrentStock / totalCapacity) * 100, 100) : 0;
+  const capacityUsageRate = getShelfUsageRate();
 
   return {
     totalInventoryValue: totals.totalInventoryValue,
@@ -278,7 +329,36 @@ export function getInventoryOverview(): InventoryOverview {
     shortageCount: totals.shortageCount,
     warningCount: totals.warningCount,
     totalSkus: rows.length,
+    totalShelfCount: shelves.length,
+    availableShelfCount: shelves.filter((item) => item.remainingCapacity > 0).length,
   };
+}
+
+export function listInventoryShelves(): InventoryShelfOverviewRecord[] {
+  return listWarehouseShelves().map((shelf) => {
+    let status: InventoryShelfOverviewRecord['status'] = '可用';
+    if (shelf.usedQuantity === 0) {
+      status = '空闲';
+    } else if (shelf.remainingCapacity === 0) {
+      status = '满位';
+    } else if (shelf.remainingCapacity / Math.max(shelf.capacity, 1) < 0.2) {
+      status = '紧张';
+    }
+
+    return {
+      shelfId: shelf.id,
+      warehouseId: shelf.warehouseId,
+      warehouseName: shelf.warehouseName,
+      shelfCode: shelf.shelfCode,
+      shelfName: shelf.shelfName,
+      tags: shelf.tags,
+      capacity: shelf.capacity,
+      usedQuantity: shelf.usedQuantity,
+      remainingCapacity: shelf.remainingCapacity,
+      itemCount: shelf.itemCount,
+      status,
+    };
+  });
 }
 
 export function adjustInventory(payload: InventoryAdjustmentPayload) {
@@ -313,6 +393,7 @@ export function adjustInventory(payload: InventoryAdjustmentPayload) {
     product.productId,
     DEFAULT_WAREHOUSE_ID,
   );
+  rebalanceShelfStock(product.productId, DEFAULT_WAREHOUSE_ID, payload.targetStock);
 
   appendInventoryMovement({
     productId: product.productId,
@@ -364,6 +445,7 @@ export function forceDeleteInventory(sku: string, options?: { aggressive?: boole
   }
 
   db.prepare('DELETE FROM inventory WHERE product_id = ?').run(product.id);
+  db.prepare('DELETE FROM inventory_shelf_stock WHERE product_id = ?').run(product.id);
   appendAuditLog(aggressive ? 'delete_inventory_force' : 'delete_inventory', 'inventory', product.sku, {
     productId: product.id,
     productName: product.name,

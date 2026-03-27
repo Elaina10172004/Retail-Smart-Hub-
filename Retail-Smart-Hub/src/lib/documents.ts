@@ -1,5 +1,6 @@
 import { formatCurrency } from '@/lib/format';
 import type { DocumentPreviewRecord } from '@/types/documents';
+import type { ReceiptRecord, ReceivableDetailRecord } from '@/types/finance';
 import type { InboundDetailRecord } from '@/types/inbound';
 import type { OrderDetailRecord } from '@/types/orders';
 import type { ProcurementOrderDetail } from '@/types/procurement';
@@ -57,7 +58,7 @@ export function buildProcurementDocument(detail: ProcurementOrderDetail): Docume
     columns: [
       { key: 'sku', label: 'SKU', width: '17%' },
       { key: 'productName', label: '商品名称', width: '29%' },
-      { key: 'orderedQty', label: '订购数量', align: 'right', width: '12%' },
+      { key: 'orderedQty', label: '采购数量', align: 'right', width: '12%' },
       { key: 'arrivedQty', label: '到货数量', align: 'right', width: '12%' },
       { key: 'unitCost', label: '采购单价', align: 'right', width: '15%' },
       { key: 'lineAmount', label: '行金额', align: 'right', width: '15%' },
@@ -130,7 +131,8 @@ export function buildOrderDocument(detail: OrderDetailRecord): DocumentPreviewRe
 }
 
 export function buildInboundDocument(detail: InboundDetailRecord): DocumentPreviewRecord {
-  const totalQuantity = detail.itemsDetail.reduce((sum, item) => sum + item.qualifiedQty, 0);
+  const totalQualifiedQuantity = detail.itemsDetail.reduce((sum, item) => sum + item.qualifiedQty, 0);
+  const totalInboundQuantity = detail.itemsDetail.reduce((sum, item) => sum + item.inboundQty, 0);
 
   return {
     id: detail.id,
@@ -151,19 +153,28 @@ export function buildInboundDocument(detail: InboundDetailRecord): DocumentPrevi
       { label: '采购单号', value: detail.poId },
     ],
     columns: [
-      { key: 'sku', label: 'SKU', width: '25%' },
-      { key: 'productName', label: '商品名称', width: '55%' },
-      { key: 'qualifiedQty', label: '入库数量', align: 'right', width: '20%' },
+      { key: 'sku', label: 'SKU', width: '16%' },
+      { key: 'productName', label: '商品名称', width: '28%' },
+      { key: 'qualifiedQty', label: '合格数量', align: 'right', width: '12%' },
+      { key: 'inboundQty', label: '入库数量', align: 'right', width: '12%' },
+      { key: 'shelfCode', label: '入库货架', width: '16%' },
+      { key: 'suggestedShelfCode', label: '推荐货架', width: '16%' },
     ],
     rows: detail.itemsDetail.map((item) => ({
-      id: `${detail.id}-${item.sku}`,
+      id: item.id,
       values: {
         sku: item.sku,
         productName: item.productName,
         qualifiedQty: formatQuantity(item.qualifiedQty),
+        inboundQty: formatQuantity(item.inboundQty),
+        shelfCode: item.shelfCode || item.shelfName || '-',
+        suggestedShelfCode: item.suggestedShelfCode || '-',
       },
     })),
-    summaryFields: [{ label: '入库总数量', value: `${totalQuantity} 件`, emphasize: true }],
+    summaryFields: [
+      { label: '合格总数量', value: `${totalQualifiedQuantity} 件` },
+      { label: '入库总数量', value: `${totalInboundQuantity} 件`, emphasize: true },
+    ],
     footerNote: DEFAULT_DOCUMENT_FOOTER,
   };
 }
@@ -207,6 +218,73 @@ export function buildShippingDocument(detail: ShippingDetailRecord): DocumentPre
     })),
     summaryFields: [{ label: '出库总数量', value: `${totalQuantity} 件`, emphasize: true }],
     remark: detail.remark,
+    footerNote: DEFAULT_DOCUMENT_FOOTER,
+  };
+}
+
+export function buildReceivableDocument(detail: ReceivableDetailRecord): DocumentPreviewRecord {
+  return {
+    id: detail.id,
+    type: 'receivable',
+    title: '应收单',
+    documentNo: detail.id,
+    status: detail.status,
+    headerFields: [
+      { label: '关联订单', value: detail.orderId, emphasize: true },
+      { label: '订单渠道', value: detail.orderChannel },
+      { label: '到期日期', value: formatDateTime(detail.dueDate) },
+      { label: '账款状态', value: detail.status, emphasize: true },
+    ],
+    partyFields: [{ label: '客户名称', value: detail.customerName, emphasize: true }],
+    columns: [
+      { key: 'metric', label: '项目', width: '45%' },
+      { key: 'value', label: '金额 / 信息', align: 'right', width: '55%' },
+    ],
+    rows: [
+      { id: `${detail.id}-due`, values: { metric: '应收金额', value: formatCurrency(detail.amountDue) } },
+      { id: `${detail.id}-paid`, values: { metric: '已收金额', value: formatCurrency(detail.amountPaid) } },
+      { id: `${detail.id}-remaining`, values: { metric: '待收金额', value: formatCurrency(detail.remainingAmount) } },
+      { id: `${detail.id}-last`, values: { metric: '最近收款时间', value: formatDateTime(detail.lastReceivedAt) } },
+    ],
+    summaryFields: [
+      { label: '待收金额', value: formatCurrency(detail.remainingAmount), emphasize: true },
+      { label: '收款笔数', value: `${detail.records.length} 笔` },
+    ],
+    remark: detail.remark,
+    footerNote: DEFAULT_DOCUMENT_FOOTER,
+  };
+}
+
+export function buildReceiptDocument(detail: ReceivableDetailRecord, record: ReceiptRecord): DocumentPreviewRecord {
+  return {
+    id: record.id,
+    type: 'receipt',
+    title: '收款单',
+    documentNo: record.id,
+    status: '已登记',
+    headerFields: [
+      { label: '收款日期', value: formatDateTime(record.receivedAt) },
+      { label: '收款方式', value: record.method },
+      { label: '关联应收', value: detail.id },
+      { label: '关联订单', value: detail.orderId },
+    ],
+    partyFields: [{ label: '客户名称', value: detail.customerName, emphasize: true }],
+    referenceFields: [
+      { label: '订单渠道', value: detail.orderChannel },
+      { label: '单据状态', value: detail.status },
+    ],
+    columns: [
+      { key: 'metric', label: '项目', width: '45%' },
+      { key: 'value', label: '金额 / 信息', align: 'right', width: '55%' },
+    ],
+    rows: [
+      { id: `${record.id}-amount`, values: { metric: '本次收款金额', value: formatCurrency(record.amount) } },
+      { id: `${record.id}-paid`, values: { metric: '累计已收金额', value: formatCurrency(detail.amountPaid) } },
+      { id: `${record.id}-remaining`, values: { metric: '剩余待收金额', value: formatCurrency(detail.remainingAmount) } },
+      { id: `${record.id}-method`, values: { metric: '备注', value: record.remark || '-' } },
+    ],
+    summaryFields: [{ label: '本次收款', value: formatCurrency(record.amount), emphasize: true }],
+    remark: record.remark,
     footerNote: DEFAULT_DOCUMENT_FOOTER,
   };
 }

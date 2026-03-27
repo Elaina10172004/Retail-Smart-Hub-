@@ -8,6 +8,8 @@ import {
   forceUpdateInboundStatus,
   getInboundDetail,
   listInbounds,
+  saveInboundDraft,
+  type SaveInboundDraftItemPayload,
 } from './inbound.service';
 
 export const inboundRouter = Router();
@@ -36,9 +38,24 @@ inboundRouter.get('/:id', requirePermission('procurement.manage'), (req, res) =>
   return ok(res, detail);
 });
 
-inboundRouter.post('/:id/confirm', requirePermission('procurement.manage'), (req, res) => {
+inboundRouter.post('/:id/draft', requirePermission('procurement.manage'), (req, res) => {
+  const items = Array.isArray(req.body?.items) ? (req.body.items as SaveInboundDraftItemPayload[]) : [];
+  if (items.length === 0) {
+    return fail(res, 400, 'items are required');
+  }
+
   try {
-    const inbound = confirmInbound(req.params.id);
+    const inbound = saveInboundDraft(req.params.id, items);
+    return ok(res, inbound, '入库单草稿已保存。');
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Save inbound draft failed');
+  }
+});
+
+inboundRouter.post('/:id/confirm', requirePermission('procurement.manage'), (req, res) => {
+  const items = Array.isArray(req.body?.items) ? (req.body.items as SaveInboundDraftItemPayload[]) : undefined;
+  try {
+    const inbound = confirmInbound(req.params.id, items);
     return ok(res, inbound, '入库已确认，库存已同步更新。');
   } catch (error) {
     return fail(res, 404, error instanceof Error ? error.message : 'Inbound order not found');

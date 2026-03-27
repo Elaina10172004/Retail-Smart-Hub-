@@ -1,4 +1,4 @@
-export type BusinessDocumentType = 'procurement' | 'order' | 'inbound' | 'shipping';
+export type BusinessDocumentType = 'procurement' | 'order' | 'inbound' | 'shipping' | 'receivable' | 'receipt';
 
 export type DocumentColumnAlign = 'left' | 'center' | 'right';
 

@@ -7,6 +7,7 @@ import type {
   InventoryDetailRecord,
   InventoryItem,
   InventoryOverview,
+  InventoryShelfOverviewRecord,
 } from '@/types/inventory';
 
 export function fetchInventoryList() {
@@ -23,6 +24,10 @@ export function fetchInventoryAlerts() {
 
 export function fetchInventoryOverview() {
   return apiClient.get<ApiEnvelope<InventoryOverview>>('/inventory/overview');
+}
+
+export function fetchInventoryShelves() {
+  return apiClient.get<ApiEnvelope<InventoryShelfOverviewRecord[]>>('/inventory/shelves');
 }
 
 export function adjustInventory(payload: InventoryAdjustmentPayload) {

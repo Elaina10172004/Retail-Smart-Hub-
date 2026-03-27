@@ -1,14 +1,17 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ArrowDownRight, ArrowUpRight, CreditCard, Eye, History, LoaderCircle, RefreshCw, Wallet } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
+import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
+import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { useAuth } from '@/auth/AuthContext';
+import { buildReceivableDocument, buildReceiptDocument } from '@/lib/documents';
 import { downloadCsv } from '@/lib/export';
-import { ArrowDownRight, ArrowUpRight, CreditCard, Eye, Filter, History, LoaderCircle, RefreshCw, Search, Wallet } from 'lucide-react';
+import { formatCurrency } from '@/lib/format';
 import {
   fetchFinanceOverview,
   fetchPayableDetail,
@@ -18,12 +21,13 @@ import {
   payPayable,
   receiveReceivable,
 } from '@/services/api/finance';
-import { formatCurrency } from '@/lib/format';
+import type { DocumentPreviewRecord } from '@/types/documents';
 import type {
   FinanceOverview,
   PayableDetailRecord,
   PayableRecord,
   PayableStatus,
+  ReceiptRecord,
   ReceivableDetailRecord,
   ReceivableRecord,
   ReceivableStatus,
@@ -47,6 +51,26 @@ function payableVariant(status: PayableStatus) {
   return 'warning';
 }
 
+interface ReceiptDraft {
+  amount: string;
+  method: string;
+  remark: string;
+}
+
+const RECEIPT_METHOD_OPTIONS = ['银行转账', '微信支付', '支付宝', '现金', '刷卡'] as const;
+
+function createReceiptDraft(detail?: ReceivableDetailRecord): ReceiptDraft {
+  return {
+    amount: detail && detail.remainingAmount > 0 ? String(detail.remainingAmount) : '',
+    method: '银行转账',
+    remark: '',
+  };
+}
+
+function formatDateLabel(value?: string) {
+  return value || '-';
+}
+
 export function FinancialManagement() {
   const { hasPermission } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -58,6 +82,10 @@ export function FinancialManagement() {
   const [payables, setPayables] = useState<PayableRecord[]>([]);
   const [selectedReceivable, setSelectedReceivable] = useState<ReceivableDetailRecord | null>(null);
   const [selectedPayable, setSelectedPayable] = useState<PayableDetailRecord | null>(null);
+  const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft>(createReceiptDraft());
+  const [previewDocuments, setPreviewDocuments] = useState<DocumentPreviewRecord[]>([]);
+  const [previewInitialId, setPreviewInitialId] = useState('');
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -69,11 +97,12 @@ export function FinancialManagement() {
   const filteredReceivables = useMemo(
     () =>
       receivables.filter((item) => {
+        const keyword = searchTerm.trim().toLowerCase();
         const matchesSearch =
-          !searchTerm ||
-          item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          item.orderId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          item.customer.toLowerCase().includes(searchTerm.toLowerCase());
+          !keyword ||
+          item.id.toLowerCase().includes(keyword) ||
+          item.orderId.toLowerCase().includes(keyword) ||
+          item.customer.toLowerCase().includes(keyword);
         const matchesStatus = !statusFilter || item.status === statusFilter;
         return matchesSearch && matchesStatus;
       }),
@@ -83,18 +112,19 @@ export function FinancialManagement() {
   const filteredPayables = useMemo(
     () =>
       payables.filter((item) => {
+        const keyword = searchTerm.trim().toLowerCase();
         const matchesSearch =
-          !searchTerm ||
-          item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          item.purchaseOrderId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          item.supplier.toLowerCase().includes(searchTerm.toLowerCase());
+          !keyword ||
+          item.id.toLowerCase().includes(keyword) ||
+          item.purchaseOrderId.toLowerCase().includes(keyword) ||
+          item.supplier.toLowerCase().includes(keyword);
         const matchesStatus = !statusFilter || item.status === statusFilter;
         return matchesSearch && matchesStatus;
       }),
     [payables, searchTerm, statusFilter],
   );
 
-  const loadFinance = async () => {
+  const loadFinance = async (options?: { keepReceivableId?: string; keepPayableId?: string }) => {
     setIsLoading(true);
     setPageError('');
     try {
@@ -106,6 +136,15 @@ export function FinancialManagement() {
       setOverview(overviewResponse.data);
       setReceivables(receivableResponse.data);
       setPayables(payableResponse.data);
+
+      if (options?.keepReceivableId) {
+        const detailResponse = await fetchReceivableDetail(options.keepReceivableId);
+        setSelectedReceivable(detailResponse.data);
+      }
+      if (options?.keepPayableId) {
+        const detailResponse = await fetchPayableDetail(options.keepPayableId);
+        setSelectedPayable(detailResponse.data);
+      }
     } catch (error) {
       setPageError(getErrorMessage(error));
     } finally {
@@ -117,6 +156,16 @@ export function FinancialManagement() {
     void loadFinance();
   }, []);
 
+  const openPreview = (documents: DocumentPreviewRecord[], activeDocumentId?: string) => {
+    if (documents.length === 0) {
+      return;
+    }
+
+    setPreviewDocuments(documents);
+    setPreviewInitialId(activeDocumentId || documents[0]?.id || '');
+    setIsPreviewOpen(true);
+  };
+
   const handleViewReceivableDetail = async (id: string) => {
     setIsDetailLoading(true);
     setPageError('');
@@ -124,6 +173,7 @@ export function FinancialManagement() {
       const response = await fetchReceivableDetail(id);
       setSelectedReceivable(response.data);
       setSelectedPayable(null);
+      setReceiptDraft(createReceiptDraft(response.data));
       setActiveTab('receivables');
     } catch (error) {
       setPageError(getErrorMessage(error));
@@ -147,30 +197,83 @@ export function FinancialManagement() {
     }
   };
 
-  const handleReceive = async (record: ReceivableRecord) => {
+  const handleOpenReceivableDocument = async (recordOrId: ReceivableRecord | ReceivableDetailRecord | string) => {
+    setPageError('');
+    try {
+      const id = typeof recordOrId === 'string' ? recordOrId : recordOrId.id;
+      const detail =
+        typeof recordOrId === 'string' || !('records' in recordOrId)
+          ? (await fetchReceivableDetail(id)).data
+          : recordOrId;
+      setSelectedReceivable(detail);
+      setReceiptDraft(createReceiptDraft(detail));
+      openPreview([buildReceivableDocument(detail)], detail.id);
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    }
+  };
+
+  const handleOpenReceiptDocument = async (recordOrId: ReceivableDetailRecord | string, receipt?: ReceiptRecord) => {
+    setPageError('');
+    try {
+      const detail = typeof recordOrId === 'string' ? (await fetchReceivableDetail(recordOrId)).data : recordOrId;
+      const targetReceipt = receipt || detail.records[0];
+      if (!targetReceipt) {
+        setPageError('当前应收单还没有收款记录。');
+        return;
+      }
+      setSelectedReceivable(detail);
+      setReceiptDraft(createReceiptDraft(detail));
+      openPreview([buildReceiptDocument(detail, targetReceipt)], targetReceipt.id);
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    }
+  };
+
+  const handleSubmitReceipt = async (mode: 'custom' | 'full') => {
+    if (!selectedReceivable) {
+      setPageError('请先选择一条应收单。');
+      return;
+    }
     if (!canReceive) {
       setPageError('当前角色没有收款登记权限。');
       return;
     }
-    const amountText = window.prompt('请输入收款金额', String(record.remainingAmount));
-    if (!amountText) return;
-    const amount = Number(amountText);
+
+    const amount = mode === 'full' ? selectedReceivable.remainingAmount : Number(receiptDraft.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       setPageError('收款金额必须为正数。');
       return;
     }
-    if (!(await confirm(`确认登记收款 ${formatCurrency(amount)} ？`))) return;
+    if (amount > selectedReceivable.remainingAmount) {
+      setPageError('收款金额不能大于待收金额。');
+      return;
+    }
+    if (!(await confirm(`确认登记收款 ${formatCurrency(amount)} ？`))) {
+      return;
+    }
 
-    setActiveId(record.id);
+    const method = receiptDraft.method || '银行转账';
+    const remark = receiptDraft.remark.trim() || undefined;
+
+    setActiveId(selectedReceivable.id);
     setActionMessage('');
     setPageError('');
     try {
-      const response = await receiveReceivable(record.id, { amount, method: '银行转账' });
+      const response = await receiveReceivable(selectedReceivable.id, { amount, method, remark });
+      const detailResponse = await fetchReceivableDetail(selectedReceivable.id);
+      const refreshedDetail = detailResponse.data;
+      const latestReceipt =
+        refreshedDetail.records.find((item) => item.id === response.data.latestReceiptId) || refreshedDetail.records[0];
+
+      setSelectedReceivable(refreshedDetail);
+      setReceiptDraft(createReceiptDraft(refreshedDetail));
       setActionMessage(response.message || '收款已登记。');
-      if (selectedReceivable?.id === record.id) {
-        await handleViewReceivableDetail(record.id);
+      await loadFinance({ keepReceivableId: selectedReceivable.id });
+
+      if (latestReceipt) {
+        openPreview([buildReceiptDocument(refreshedDetail, latestReceipt)], latestReceipt.id);
       }
-      await loadFinance();
     } catch (error) {
       setPageError(getErrorMessage(error));
     } finally {
@@ -198,10 +301,7 @@ export function FinancialManagement() {
     try {
       const response = await payPayable(record.id, { amount, method: '对公转账' });
       setActionMessage(response.message || '付款已登记。');
-      if (selectedPayable?.id === record.id) {
-        await handleViewPayableDetail(record.id);
-      }
-      await loadFinance();
+      await loadFinance({ keepPayableId: selectedPayable?.id === record.id ? record.id : undefined });
     } catch (error) {
       setPageError(getErrorMessage(error));
     } finally {
@@ -246,146 +346,229 @@ export function FinancialManagement() {
     setActionMessage(`已导出 ${filteredPayables.length} 条应付记录。`);
   };
 
-  const handleFilterKeyword = (keyword: string) => {
-    setSearchTerm(keyword);
-    setActionMessage(`已按 ${keyword} 筛选当前财务列表。`);
-  };
+  const receivableStatusOptions: ReceivableStatus[] = ['未收款', '部分收款', '已收款', '逾期'];
+  const payableStatusOptions: PayableStatus[] = ['未付款', '部分付款', '已付款', '逾期'];
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-gray-900">财务管理</h2>
-          <p className="text-sm text-gray-500 mt-1">财务页已接入真实应收、应付、收款、付款数据，并支持查看账单详情与收付款记录。</p>
+          <p className="mt-1 text-sm text-gray-500">进入单据工作区后可以直接登记收款、打印应收单和收款单。</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => void loadFinance()} disabled={isLoading}><RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} /> 刷新数据</Button>
-          <Button className="bg-blue-600 hover:bg-blue-700 shadow-sm" onClick={handleExportCurrentTab} disabled={(activeTab === 'receivables' ? filteredReceivables.length : filteredPayables.length) === 0}><CreditCard className="mr-2 h-4 w-4" /> 对账导出</Button>
+          <Button
+            variant="outline"
+            className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm"
+            onClick={() => void loadFinance({ keepReceivableId: selectedReceivable?.id, keepPayableId: selectedPayable?.id })}
+            disabled={isLoading}
+          >
+            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            刷新数据
+          </Button>
+          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={handleExportCurrentTab}>
+            <History className="mr-2 h-4 w-4" />
+            导出当前列表
+          </Button>
         </div>
       </div>
 
-      {pageError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">财务数据处理失败：{pageError}</div>}
-      {actionMessage && <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{actionMessage}</div>}
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <Card className="border-gray-200 shadow-sm"><CardContent className="pt-6"><div className="flex items-center justify-between"><div><div className="text-xs text-gray-500">待收总额</div><div className="mt-1 text-xl font-semibold text-gray-900">{formatCurrency(overview?.totalReceivable || 0)}</div></div><div className="rounded-full bg-emerald-50 p-3 text-emerald-600"><ArrowDownRight className="h-5 w-5" /></div></div></CardContent></Card>
+        <Card className="border-gray-200 shadow-sm"><CardContent className="pt-6"><div className="flex items-center justify-between"><div><div className="text-xs text-gray-500">逾期应收</div><div className="mt-1 text-xl font-semibold text-gray-900">{formatCurrency(overview?.overdueReceivable || 0)}</div></div><div className="rounded-full bg-red-50 p-3 text-red-600"><Wallet className="h-5 w-5" /></div></div></CardContent></Card>
+        <Card className="border-gray-200 shadow-sm"><CardContent className="pt-6"><div className="flex items-center justify-between"><div><div className="text-xs text-gray-500">本月收款</div><div className="mt-1 text-xl font-semibold text-gray-900">{formatCurrency(overview?.monthlyReceived || 0)}</div></div><div className="rounded-full bg-blue-50 p-3 text-blue-600"><CreditCard className="h-5 w-5" /></div></div></CardContent></Card>
+        <Card className="border-gray-200 shadow-sm"><CardContent className="pt-6"><div className="flex items-center justify-between"><div><div className="text-xs text-gray-500">待付总额</div><div className="mt-1 text-xl font-semibold text-gray-900">{formatCurrency(overview?.totalPayable || 0)}</div></div><div className="rounded-full bg-amber-50 p-3 text-amber-600"><ArrowUpRight className="h-5 w-5" /></div></div></CardContent></Card>
+        <Card className="border-gray-200 shadow-sm"><CardContent className="pt-6"><div className="flex items-center justify-between"><div><div className="text-xs text-gray-500">本周应付</div><div className="mt-1 text-xl font-semibold text-gray-900">{formatCurrency(overview?.dueThisWeekPayable || 0)}</div></div><div className="rounded-full bg-orange-50 p-3 text-orange-600"><CreditCard className="h-5 w-5" /></div></div></CardContent></Card>
+        <Card className="border-gray-200 shadow-sm"><CardContent className="pt-6"><div className="flex items-center justify-between"><div><div className="text-xs text-gray-500">未完成账单</div><div className="mt-1 text-xl font-semibold text-gray-900">{(overview?.pendingReceivableCount || 0) + (overview?.pendingPayableCount || 0)}</div></div><div className="rounded-full bg-slate-100 p-3 text-slate-600"><History className="h-5 w-5" /></div></div></CardContent></Card>
+      </div>
 
-      {(selectedReceivable || selectedPayable || isDetailLoading) && (
+      {pageError ? <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">财务数据处理失败：{pageError}</div> : null}
+      {actionMessage ? <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{actionMessage}</div> : null}
+
+      {(selectedReceivable || selectedPayable || isDetailLoading) ? (
         <Card className="border-gray-200 shadow-sm">
-          <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
-            <CardTitle className="text-lg font-semibold text-gray-800 flex items-center justify-between gap-3">
-              <span>{activeTab === 'receivables' ? '应收详情' : '应付详情'}</span>
+          <CardHeader className="rounded-t-xl border-b border-gray-100 bg-gray-50/50 pb-3">
+            <CardTitle className="flex items-center justify-between gap-3 text-lg font-semibold text-gray-800">
+              <span>{activeTab === 'receivables' ? '应收单据工作区' : '应付单详情'}</span>
               <Button variant="ghost" size="sm" onClick={() => { setSelectedReceivable(null); setSelectedPayable(null); }}>关闭</Button>
             </CardTitle>
           </CardHeader>
-          <CardContent className="pt-6">
+          <CardContent className="space-y-6 pt-6">
             {isDetailLoading ? <div className="text-sm text-gray-500">正在加载账单详情...</div> : null}
+
             {selectedReceivable ? (
               <div className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">应收单 / 订单</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedReceivable.id}</div><div className="mt-1 text-xs text-gray-500">{selectedReceivable.orderId}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">客户 / 渠道</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedReceivable.customerName}</div><div className="mt-1 text-xs text-gray-500">{selectedReceivable.orderChannel}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">金额概览</div><div className="mt-1 text-sm font-semibold text-gray-900">应收 {formatCurrency(selectedReceivable.amountDue)}</div><div className="mt-1 text-xs text-gray-500">已收 {formatCurrency(selectedReceivable.amountPaid)} / 余额 {formatCurrency(selectedReceivable.remainingAmount)}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">状态</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedReceivable.status}</div><div className="mt-1 text-xs text-gray-500">到期日：{selectedReceivable.dueDate}</div></div>
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.2em] text-gray-500">Receivable Workspace</div>
+                    <div className="mt-2 text-xl font-semibold text-gray-900">{selectedReceivable.id}</div>
+                    <div className="mt-1 text-sm text-gray-500">订单 {selectedReceivable.orderId} · {selectedReceivable.customerName} · {selectedReceivable.orderChannel}</div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => void handleOpenReceivableDocument(selectedReceivable)}>
+                      <Eye className="mr-2 h-4 w-4" /> 预览应收单
+                    </Button>
+                    <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleSubmitReceipt('full')} disabled={!canReceive || selectedReceivable.remainingAmount <= 0 || activeId === selectedReceivable.id}>
+                      {activeId === selectedReceivable.id ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Wallet className="mr-2 h-4 w-4" />} 一键全额收款
+                    </Button>
+                  </div>
                 </div>
-                <div className="space-y-3">
-                  <h3 className="text-sm font-semibold text-gray-900">收款记录</h3>
-                  {selectedReceivable.records.length > 0 ? selectedReceivable.records.map((record) => (
-                    <div key={record.id} className="rounded-lg border border-gray-200 p-4">
-                      <div className="flex items-center justify-between gap-4">
-                        <div>
-                          <div className="text-sm font-semibold text-gray-900">{record.id}</div>
-                          <div className="mt-1 text-xs text-gray-500">{record.method} · {record.receivedAt}</div>
-                        </div>
-                        <div className="text-right text-sm font-medium text-green-600">{formatCurrency(record.amount)}</div>
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">账款状态</div><div className="mt-2"><Badge variant={receivableVariant(selectedReceivable.status)}>{selectedReceivable.status}</Badge></div><div className="mt-2 text-xs text-gray-500">到期日 {formatDateLabel(selectedReceivable.dueDate)}</div></div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">应收金额</div><div className="mt-1 text-lg font-semibold text-gray-900">{formatCurrency(selectedReceivable.amountDue)}</div></div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">已收金额</div><div className="mt-1 text-lg font-semibold text-emerald-600">{formatCurrency(selectedReceivable.amountPaid)}</div></div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">待收金额</div><div className="mt-1 text-lg font-semibold text-blue-600">{formatCurrency(selectedReceivable.remainingAmount)}</div></div>
+                </div>
+
+                <div className="grid gap-6 xl:grid-cols-[1.3fr_1fr]">
+                  <div className="rounded-xl border border-gray-200 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">收款登记</div>
+                        <div className="mt-1 text-xs text-gray-500">支持全额收款或自定义本次收款金额。</div>
                       </div>
-                      {record.remark ? <div className="mt-2 text-xs text-gray-500">{record.remark}</div> : null}
+                      <Badge variant="outline">单据打印后自动留痕</Badge>
                     </div>
-                  )) : <div className="rounded-lg border border-dashed border-gray-300 p-4 text-sm text-gray-500">当前还没有收款记录。</div>}
-                  {selectedReceivable.remark ? <div className="rounded-lg border border-gray-200 p-4 text-sm text-gray-700"><div className="mb-2 font-semibold text-gray-900">备注</div>{selectedReceivable.remark}</div> : null}
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700">本次收款金额</label>
+                        <Input type="number" min="0" step="0.01" value={receiptDraft.amount} onChange={(event) => setReceiptDraft((current) => ({ ...current, amount: event.target.value }))} placeholder="输入本次收款金额" />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700">收款方式</label>
+                        <select className="h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" value={receiptDraft.method} onChange={(event) => setReceiptDraft((current) => ({ ...current, method: event.target.value }))}>
+                          {RECEIPT_METHOD_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="mt-4 space-y-2">
+                      <label className="text-sm font-medium text-gray-700">收款备注</label>
+                      <textarea className="min-h-24 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none ring-offset-background focus:ring-2 focus:ring-blue-500" value={receiptDraft.remark} onChange={(event) => setReceiptDraft((current) => ({ ...current, remark: event.target.value }))} placeholder="填写本次收款说明、凭证号、摘要等" />
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleSubmitReceipt('custom')} disabled={!canReceive || selectedReceivable.remainingAmount <= 0 || activeId === selectedReceivable.id}>
+                        {activeId === selectedReceivable.id ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <CreditCard className="mr-2 h-4 w-4" />} 登记本次收款
+                      </Button>
+                      <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => setReceiptDraft(createReceiptDraft(selectedReceivable))}>重置为待收金额</Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-gray-200 p-5">
+                    <div className="text-sm font-semibold text-gray-900">最近收款记录</div>
+                    <div className="mt-1 text-xs text-gray-500">每一笔收款都可以单独打开收款单并打印。</div>
+                    <div className="mt-4 space-y-3">
+                      {selectedReceivable.records.length > 0 ? selectedReceivable.records.map((record) => (
+                        <div key={record.id} className="rounded-lg border border-gray-200 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-semibold text-gray-900">{record.id}</div>
+                              <div className="mt-1 text-xs text-gray-500">{record.receivedAt} · {record.method}</div>
+                              <div className="mt-2 text-base font-semibold text-emerald-600">{formatCurrency(record.amount)}</div>
+                              <div className="mt-1 text-xs text-gray-500">{record.remark || '无备注'}</div>
+                            </div>
+                            <Button variant="outline" size="sm" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => void handleOpenReceiptDocument(selectedReceivable, record)}>
+                              <Eye className="mr-2 h-4 w-4" /> 打开收款单
+                            </Button>
+                          </div>
+                        </div>
+                      )) : <div className="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-500">这条应收单还没有收款记录。</div>}
+                    </div>
+                  </div>
                 </div>
               </div>
             ) : null}
+
             {selectedPayable ? (
               <div className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">应付单 / 采购单</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedPayable.id}</div><div className="mt-1 text-xs text-gray-500">{selectedPayable.purchaseOrderId}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">供应商</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedPayable.supplier}</div><div className="mt-1 text-xs text-gray-500">到期日：{selectedPayable.dueDate}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">金额概览</div><div className="mt-1 text-sm font-semibold text-gray-900">应付 {formatCurrency(selectedPayable.amountDue)}</div><div className="mt-1 text-xs text-gray-500">已付 {formatCurrency(selectedPayable.amountPaid)} / 余额 {formatCurrency(selectedPayable.remainingAmount)}</div></div>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">状态</div><div className="mt-1 text-sm font-semibold text-gray-900">{selectedPayable.status}</div><div className="mt-1 text-xs text-gray-500">最近付款：{selectedPayable.lastPaidAt || '-'}</div></div>
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.2em] text-gray-500">Payable Detail</div>
+                    <div className="mt-2 text-xl font-semibold text-gray-900">{selectedPayable.id}</div>
+                    <div className="mt-1 text-sm text-gray-500">采购单 {selectedPayable.purchaseOrderId} · {selectedPayable.supplier}</div>
+                  </div>
+                  <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handlePay(selectedPayable)} disabled={!canPay || selectedPayable.remainingAmount <= 0 || activeId === selectedPayable.id}>
+                    {activeId === selectedPayable.id ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Wallet className="mr-2 h-4 w-4" />} 登记付款
+                  </Button>
                 </div>
-                <div className="space-y-3">
-                  <h3 className="text-sm font-semibold text-gray-900">付款记录</h3>
-                  {selectedPayable.records.length > 0 ? selectedPayable.records.map((record) => (
-                    <div key={record.id} className="rounded-lg border border-gray-200 p-4">
-                      <div className="flex items-center justify-between gap-4">
-                        <div>
-                          <div className="text-sm font-semibold text-gray-900">{record.id}</div>
-                          <div className="mt-1 text-xs text-gray-500">{record.method} · {record.paidAt}</div>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">账款状态</div><div className="mt-2"><Badge variant={payableVariant(selectedPayable.status)}>{selectedPayable.status}</Badge></div><div className="mt-2 text-xs text-gray-500">到期日 {formatDateLabel(selectedPayable.dueDate)}</div></div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">应付金额</div><div className="mt-1 text-lg font-semibold text-gray-900">{formatCurrency(selectedPayable.amountDue)}</div></div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">已付金额</div><div className="mt-1 text-lg font-semibold text-emerald-600">{formatCurrency(selectedPayable.amountPaid)}</div></div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4"><div className="text-xs text-gray-500">待付金额</div><div className="mt-1 text-lg font-semibold text-blue-600">{formatCurrency(selectedPayable.remainingAmount)}</div></div>
+                </div>
+                <div className="rounded-xl border border-gray-200 p-5">
+                  <div className="text-sm font-semibold text-gray-900">付款记录</div>
+                  <div className="mt-4 space-y-3">
+                    {selectedPayable.records.length > 0 ? selectedPayable.records.map((record) => (
+                      <div key={record.id} className="rounded-lg border border-gray-200 p-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div><div className="text-sm font-semibold text-gray-900">{record.id}</div><div className="mt-1 text-xs text-gray-500">{record.paidAt} · {record.method}</div><div className="mt-1 text-xs text-gray-500">{record.remark || '无备注'}</div></div>
+                          <div className="text-sm font-semibold text-amber-600">{formatCurrency(record.amount)}</div>
                         </div>
-                        <div className="text-right text-sm font-medium text-red-600">{formatCurrency(record.amount)}</div>
                       </div>
-                      {record.remark ? <div className="mt-2 text-xs text-gray-500">{record.remark}</div> : null}
-                    </div>
-                  )) : <div className="rounded-lg border border-dashed border-gray-300 p-4 text-sm text-gray-500">当前还没有付款记录。</div>}
-                  {selectedPayable.remark ? <div className="rounded-lg border border-gray-200 p-4 text-sm text-gray-700"><div className="mb-2 font-semibold text-gray-900">备注</div>{selectedPayable.remark}</div> : null}
+                    )) : <div className="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-500">这条应付单还没有付款记录。</div>}
+                  </div>
                 </div>
               </div>
             ) : null}
           </CardContent>
         </Card>
-      )}
-
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-        <Card><CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2"><CardTitle className="text-sm font-medium text-gray-500">待收应收</CardTitle><ArrowUpRight className="h-4 w-4 text-green-600" /></CardHeader><CardContent><div className="text-2xl font-bold text-gray-900">{formatCurrency(overview?.totalReceivable ?? 0)}</div><p className="text-xs text-red-500 mt-1">逾期 {formatCurrency(overview?.overdueReceivable ?? 0)}</p></CardContent></Card>
-        <Card><CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2"><CardTitle className="text-sm font-medium text-gray-500">待付应付</CardTitle><ArrowDownRight className="h-4 w-4 text-red-600" /></CardHeader><CardContent><div className="text-2xl font-bold text-gray-900">{formatCurrency(overview?.totalPayable ?? 0)}</div><p className="text-xs text-gray-500 mt-1">本周需付 {formatCurrency(overview?.dueThisWeekPayable ?? 0)}</p></CardContent></Card>
-        <Card><CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2"><CardTitle className="text-sm font-medium text-gray-500">本月已收款</CardTitle><Wallet className="h-4 w-4 text-blue-600" /></CardHeader><CardContent><div className="text-2xl font-bold text-gray-900">{formatCurrency(overview?.monthlyReceived ?? 0)}</div><p className="text-xs text-green-600 mt-1">待处理 {overview?.pendingReceivableCount ?? 0} 笔应收</p></CardContent></Card>
-        <Card><CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2"><CardTitle className="text-sm font-medium text-gray-500">本月已付款</CardTitle><CreditCard className="h-4 w-4 text-blue-600" /></CardHeader><CardContent><div className="text-2xl font-bold text-gray-900">{formatCurrency(overview?.monthlyPaid ?? 0)}</div><p className="text-xs text-gray-500 mt-1">待处理 {overview?.pendingPayableCount ?? 0} 笔应付</p></CardContent></Card>
-      </div>
+      ) : null}
 
       <Card className="border-gray-200 shadow-sm">
-        <div className="border-b border-gray-200 bg-gray-50/50 rounded-t-xl px-6 pt-4">
-          <div className="flex space-x-6">
-            <button className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'receivables' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-900'}`} onClick={() => { setActiveTab('receivables'); setStatusFilter(''); }}>
-              应收款列表
-              {activeTab === 'receivables' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-t-full"></div>}
-            </button>
-            <button className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'payables' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-900'}`} onClick={() => { setActiveTab('payables'); setStatusFilter(''); }}>
-              应付款列表
-              {activeTab === 'payables' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-t-full"></div>}
-            </button>
+        <CardHeader className="rounded-t-xl border-b border-gray-100 bg-gray-50/50 pb-3">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex flex-wrap gap-2">
+              <Button variant={activeTab === 'receivables' ? 'default' : 'outline'} onClick={() => { setActiveTab('receivables'); setStatusFilter(''); }}>
+                应收列表
+              </Button>
+              <Button variant={activeTab === 'payables' ? 'default' : 'outline'} onClick={() => { setActiveTab('payables'); setStatusFilter(''); }}>
+                应付列表
+              </Button>
+            </div>
+            <div className="flex w-full flex-1 flex-wrap gap-3 xl:justify-end">
+              <div className="relative w-full xl:w-80">
+                <Input
+                  placeholder={activeTab === 'receivables' ? '搜索应收单号、订单号、客户...' : '搜索应付单号、采购单号、供应商...'}
+                  className="bg-white border-gray-300 focus-visible:ring-blue-500"
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                />
+              </div>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">所有状态</option>
+                {(activeTab === 'receivables' ? receivableStatusOptions : payableStatusOptions).map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
+            </div>
           </div>
-        </div>
+        </CardHeader>
         <CardContent className="p-0">
-          <div className="p-4 border-b border-gray-100 flex gap-4 flex-wrap">
-            <div className="relative w-full md:w-72"><Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500" /><Input placeholder={activeTab === 'receivables' ? '搜索客户、订单、应收单...' : '搜索供应商、采购单、应付单...'} className="pl-9 bg-white border-gray-300 focus-visible:ring-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /></div>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="">所有状态</option>
-              {activeTab === 'receivables' ? <><option value="未收款">未收款</option><option value="部分收款">部分收款</option><option value="已收款">已收款</option><option value="逾期">逾期</option></> : <><option value="未付款">未付款</option><option value="部分付款">部分付款</option><option value="已付款">已付款</option><option value="逾期">逾期</option></>}
-            </select>
-          </div>
-
           {activeTab === 'receivables' ? (
             <Table>
-              <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">应收单号</TableHead><TableHead className="font-semibold text-gray-900">关联订单</TableHead><TableHead className="font-semibold text-gray-900">客户名称</TableHead><TableHead className="font-semibold text-gray-900 text-right">应收金额</TableHead><TableHead className="font-semibold text-gray-900 text-right">已收金额</TableHead><TableHead className="font-semibold text-gray-900">到期日</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">应收单号</TableHead><TableHead className="font-semibold text-gray-900">关联订单</TableHead><TableHead className="font-semibold text-gray-900">客户</TableHead><TableHead className="font-semibold text-gray-900 text-right">应收金额</TableHead><TableHead className="font-semibold text-gray-900 text-right">待收金额</TableHead><TableHead className="font-semibold text-gray-900">到期日</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
               <TableBody>
-                {isLoading && <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载应收数据...</TableCell></TableRow>}
-                {!isLoading && filteredReceivables.length === 0 && <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有应收记录。</TableCell></TableRow>}
+                {isLoading ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载应收数据...</TableCell></TableRow> : null}
+                {!isLoading && filteredReceivables.length === 0 ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有应收记录。</TableCell></TableRow> : null}
                 {!isLoading && filteredReceivables.map((item) => (
                   <TableRow key={item.id} className="hover:bg-blue-50/30 transition-colors">
                     <TableCell className="font-medium text-blue-600">{item.id}</TableCell>
                     <TableCell className="text-gray-500">{item.orderId}</TableCell>
                     <TableCell className="text-gray-900">{item.customer}</TableCell>
-                    <TableCell className="text-right font-semibold text-gray-900">{formatCurrency(item.amountDue)}</TableCell>
-                    <TableCell className="text-right text-green-600 font-medium">{formatCurrency(item.amountPaid)}</TableCell>
+                    <TableCell className="text-right font-medium text-gray-900">{formatCurrency(item.amountDue)}</TableCell>
+                    <TableCell className="text-right font-semibold text-blue-600">{formatCurrency(item.remainingAmount)}</TableCell>
                     <TableCell className="text-gray-500">{item.dueDate}</TableCell>
-                    <TableCell className="text-center"><Badge variant={receivableVariant(item.status)}>{item.status}{item.daysOverdue > 0 ? ` (${item.daysOverdue}天)` : ''}</Badge></TableCell>
+                    <TableCell className="text-center"><Badge variant={receivableVariant(item.status)}>{item.status}</Badge></TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="icon" className="text-gray-500 hover:text-blue-600 hover:bg-blue-50" onClick={() => void handleViewReceivableDetail(item.id)}><Eye className="h-4 w-4" /></Button>
+                        <Button variant="ghost" size="icon" className="text-gray-500 hover:bg-blue-50 hover:text-blue-600" onClick={() => void handleViewReceivableDetail(item.id)}>
+                          <Eye className="h-4 w-4" />
+                        </Button>
                         <RowActionMenu
                           items={[
-                            { id: 'detail', label: '查看详情', icon: Eye, onSelect: () => void handleViewReceivableDetail(item.id) },
-                            { id: 'records', label: '查看收款记录', icon: History, onSelect: () => void handleViewReceivableDetail(item.id) },
-                            { id: 'filter', label: '按客户筛选', icon: Filter, onSelect: () => handleFilterKeyword(item.customer) },
-                            { id: 'receive', label: '登记收款', icon: Wallet, onSelect: () => void handleReceive(item), disabled: item.status === '已收款' || activeId === item.id || !canReceive },
+                            { id: 'receivable-detail', label: '进入单据页', icon: Eye, onSelect: () => void handleViewReceivableDetail(item.id) },
+                            { id: 'receivable-preview', label: '预览应收单', icon: History, onSelect: () => void handleOpenReceivableDocument(item.id) },
+                            { id: 'receivable-receive', label: '登记收款', icon: Wallet, onSelect: () => void handleViewReceivableDetail(item.id), disabled: item.remainingAmount <= 0 || !canReceive },
                           ]}
                         />
                       </div>
@@ -396,28 +579,28 @@ export function FinancialManagement() {
             </Table>
           ) : (
             <Table>
-              <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">应付单号</TableHead><TableHead className="font-semibold text-gray-900">关联采购单</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">应付金额</TableHead><TableHead className="font-semibold text-gray-900 text-right">已付金额</TableHead><TableHead className="font-semibold text-gray-900">到期日/付款日</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">应付单号</TableHead><TableHead className="font-semibold text-gray-900">关联采购单</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">应付金额</TableHead><TableHead className="font-semibold text-gray-900 text-right">待付金额</TableHead><TableHead className="font-semibold text-gray-900">到期日</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
               <TableBody>
-                {isLoading && <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载应付数据...</TableCell></TableRow>}
-                {!isLoading && filteredPayables.length === 0 && <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有应付记录。</TableCell></TableRow>}
+                {isLoading ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载应付数据...</TableCell></TableRow> : null}
+                {!isLoading && filteredPayables.length === 0 ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有应付记录。</TableCell></TableRow> : null}
                 {!isLoading && filteredPayables.map((item) => (
                   <TableRow key={item.id} className="hover:bg-blue-50/30 transition-colors">
                     <TableCell className="font-medium text-blue-600">{item.id}</TableCell>
                     <TableCell className="text-gray-500">{item.purchaseOrderId}</TableCell>
                     <TableCell className="text-gray-900">{item.supplier}</TableCell>
-                    <TableCell className="text-right font-semibold text-gray-900">{formatCurrency(item.amountDue)}</TableCell>
-                    <TableCell className="text-right text-red-600 font-medium">{formatCurrency(item.amountPaid)}</TableCell>
-                    <TableCell className="text-gray-500">{item.lastPaidAt || item.dueDate}</TableCell>
-                    <TableCell className="text-center"><Badge variant={payableVariant(item.status)}>{item.status}{item.daysOverdue > 0 ? ` (${item.daysOverdue}天)` : ''}</Badge></TableCell>
+                    <TableCell className="text-right font-medium text-gray-900">{formatCurrency(item.amountDue)}</TableCell>
+                    <TableCell className="text-right font-semibold text-blue-600">{formatCurrency(item.remainingAmount)}</TableCell>
+                    <TableCell className="text-gray-500">{item.dueDate}</TableCell>
+                    <TableCell className="text-center"><Badge variant={payableVariant(item.status)}>{item.status}</Badge></TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="icon" className="text-gray-500 hover:text-blue-600 hover:bg-blue-50" onClick={() => void handleViewPayableDetail(item.id)}><Eye className="h-4 w-4" /></Button>
+                        <Button variant="ghost" size="icon" className="text-gray-500 hover:bg-blue-50 hover:text-blue-600" onClick={() => void handleViewPayableDetail(item.id)}>
+                          <Eye className="h-4 w-4" />
+                        </Button>
                         <RowActionMenu
                           items={[
-                            { id: 'detail', label: '查看详情', icon: Eye, onSelect: () => void handleViewPayableDetail(item.id) },
-                            { id: 'records', label: '查看付款记录', icon: History, onSelect: () => void handleViewPayableDetail(item.id) },
-                            { id: 'filter', label: '按供应商筛选', icon: Filter, onSelect: () => handleFilterKeyword(item.supplier) },
-                            { id: 'pay', label: '登记付款', icon: CreditCard, onSelect: () => void handlePay(item), disabled: item.status === '已付款' || activeId === item.id || !canPay },
+                            { id: 'payable-detail', label: '查看详情', icon: Eye, onSelect: () => void handleViewPayableDetail(item.id) },
+                            { id: 'payable-pay', label: '登记付款', icon: Wallet, onSelect: () => void handlePay(item), disabled: item.remainingAmount <= 0 || !canPay || activeId === item.id },
                           ]}
                         />
                       </div>
@@ -427,10 +610,10 @@ export function FinancialManagement() {
               </TableBody>
             </Table>
           )}
-
-          <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/30 rounded-b-xl"><div className="text-sm text-gray-500">{activeTab === 'receivables' ? `当前显示 ${filteredReceivables.length} 条应收记录` : `当前显示 ${filteredPayables.length} 条应付记录`}</div>{isLoading && <LoaderCircle className="h-4 w-4 animate-spin text-gray-400" />}</div>
         </CardContent>
       </Card>
+
+      <DocumentPreviewModal documents={previewDocuments} isOpen={isPreviewOpen} initialActiveId={previewInitialId} onClose={() => setIsPreviewOpen(false)} />
       {confirmDialog}
     </div>
   );

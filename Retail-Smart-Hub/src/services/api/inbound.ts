@@ -4,6 +4,7 @@ import type {
   DeleteInboundResponse,
   InboundDetailRecord,
   InboundRecord,
+  SaveInboundDraftPayload,
   UpdateInboundStatusPayload,
 } from '@/types/inbound';
 
@@ -15,8 +16,12 @@ export function fetchInboundDetail(id: string) {
   return apiClient.get<ApiEnvelope<InboundDetailRecord>>(`/inbound/${id}`);
 }
 
-export function confirmInbound(id: string) {
-  return apiClient.post<ApiEnvelope<InboundRecord>>(`/inbound/${id}/confirm`);
+export function saveInboundDraft(id: string, payload: SaveInboundDraftPayload) {
+  return apiClient.post<ApiEnvelope<InboundDetailRecord>>(`/inbound/${id}/draft`, payload);
+}
+
+export function confirmInbound(id: string, payload?: SaveInboundDraftPayload) {
+  return apiClient.post<ApiEnvelope<InboundRecord>>(`/inbound/${id}/confirm`, payload);
 }
 
 export function updateInboundStatus(id: string, payload: UpdateInboundStatusPayload) {

@@ -41,6 +41,7 @@ export interface ReceivableRecord {
   lastReceivedAt?: string;
   status: ReceivableStatus;
   daysOverdue: number;
+  latestReceiptId?: string;
 }
 
 export interface ReceivableDetailRecord extends ReceivableRecord {
