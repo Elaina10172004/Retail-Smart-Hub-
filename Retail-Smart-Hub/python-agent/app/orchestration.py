@@ -69,6 +69,10 @@ def _has_image_attachments(request: ChatRequest) -> bool:
     return any(compact_text(getattr(item, "kind", "")).lower() == "image" or getattr(item, "imageDataUrl", None) for item in request.attachments)
 
 
+def _has_image_binary(request: ChatRequest) -> bool:
+    return any(bool(str(getattr(item, "imageDataUrl", "") or "").strip()) for item in request.attachments)
+
+
 def _reply_has_visual_hallucination_markers(reply: str) -> bool:
     normalized = compact_text(reply).lower()
     markers = (
@@ -247,7 +251,7 @@ def _wants_image_extraction(prompt: str) -> bool:
 
 
 def _should_use_image_document_pipeline(request: ChatRequest) -> bool:
-    return _has_image_attachments(request)
+    return _has_image_binary(request)
 
 
 def _build_image_user_content(request: ChatRequest, instruction: str) -> Any:
@@ -470,6 +474,8 @@ async def _extract_image_document_payload(
             "import_target 只能是 procurement, sales, none 之一。",
             "送货单、发货单、delivery note 本身不能决定采购或销售方向；除非图片明确写采购单/销售单，import_target 必须返回 none。",
             "不能仅凭出现供应商、客户、商品、金额或送货信息推断采购/销售方向。",
+            "supplier_name 必须来自图片中明确可见的供应方、发货单位、供货方、公司抬头或供应商字段；商品品牌不能当作供应商。",
+            "customer_name 必须来自图片中明确可见的客户、收货方、购货方或门店字段；如果看不清则留空。",
             "如果字段看不清或无法确认，保留为空，并把原因写入 missing_fields。",
         ]
     )
@@ -494,9 +500,18 @@ async def _extract_image_document_payload(
     parsed = parse_model_turn(payload)
     normalized = _normalize_image_document_payload(parse_json_object_text(parsed.content))
     if normalized:
+        supplier_name = compact_text(normalized.get("supplier_name", ""))
+        customer_name = compact_text(normalized.get("customer_name", ""))
+        item_names = [
+            compact_text(item.get("product_name", ""))
+            for item in normalized.get("line_items", [])
+            if isinstance(item, Mapping) and compact_text(item.get("product_name", ""))
+        ][:5]
         trace.append(
             "Image extraction: candidate fields extracted "
-            f"(items={len(normalized.get('line_items', []))}, target={normalized.get('import_target', 'none')})."
+            f"(supplier={supplier_name or '-'}, customer={customer_name or '-'}, "
+            f"items={len(normalized.get('line_items', []))}, target={normalized.get('import_target', 'none')}, "
+            f"item_preview={', '.join(item_names) or '-'})."
         )
     else:
         trace.append("Image extraction: model did not return a valid JSON payload.")
@@ -520,6 +535,8 @@ async def _validate_image_document_payload(
             "approved_fields 只保留你能从图片确认的字段。",
             "送货单、发货单、delivery note 本身不能决定采购或销售方向；除非图片明确写采购单/销售单，import_target 必须返回 none。",
             "不能仅凭出现供应商、客户、商品、金额或送货信息推断采购/销售方向。",
+            "supplier_name 必须来自图片中明确可见的供应方、发货单位、供货方、公司抬头或供应商字段；商品品牌不能当作供应商。",
+            "customer_name 必须来自图片中明确可见的客户、收货方、购货方或门店字段；如果看不清则留空。",
             "如果候选字段与图片不一致、证据不足或字段缺失，approved 必须为 false。",
         ]
     )
@@ -1573,25 +1590,66 @@ async def preprocess_document_request(
         "planner_hints": [],
         "skill_hint": "",
     }
-    has_image = any(
-        compact_text(getattr(item, "kind", "")).lower() == "image"
-        or bool(str(getattr(item, "imageDataUrl", "") or "").strip())
+    image_metadata_count = sum(
+        1
         for item in request.attachments
+        if compact_text(getattr(item, "kind", "")).lower() == "image"
+        or bool(str(getattr(item, "imageDataUrl", "") or "").strip())
     )
+    image_binary_count = sum(
+        1
+        for item in request.attachments
+        if bool(str(getattr(item, "imageDataUrl", "") or "").strip())
+    )
+    has_image = image_metadata_count > 0
+    has_image_binary = image_binary_count > 0
     trace.append(
         "Image preprocessing check: "
-        f"attachments={len(request.attachments)} has_image={str(has_image).lower()} prompt={compact_text(request.prompt)[:80]}"
+        f"attachments={len(request.attachments)} image_metadata={image_metadata_count} "
+        f"image_binary={image_binary_count} prompt={compact_text(request.prompt)[:80]}"
     )
     if not has_image:
         return result
+    if not has_image_binary:
+        fallback_context = (
+            "图片预处理结果：附件只有图片元数据，没有图片二进制数据，无法进行可靠视觉识别。"
+            "\n执行建议：不要根据文件名、尺寸、历史知识或模型联想生成单据字段；请用户重新上传图片，或提供文字/表格内容。"
+        )
+        result["attachment_context"] = "\n\n".join(
+            part for part in [fallback_context, base_attachment_context] if compact_text(part)
+        )
+        result["planner_hints"] = [
+            "当前图片缺少 imageDataUrl，禁止识别供应商、客户、商品或金额。",
+            "必须提示用户重新上传图片，或改用可解析的文字/表格附件。",
+        ]
+        result["skill_hint"] = "导入 图片 数据缺失"
+        trace.append("Image preprocessing blocked: image metadata exists but imageDataUrl is missing.")
+        return result
 
     trace.append("Image preprocessing engaged before normal ReAct flow.")
-    extracted = await _extract_image_document_payload(
-        request=request,
-        config=config,
-        model_requester=model_requester,
-        trace=trace,
-    )
+    try:
+        extracted = await _extract_image_document_payload(
+            request=request,
+            config=config,
+            model_requester=model_requester,
+            trace=trace,
+        )
+    except Exception as error:
+        fallback_context = (
+            "图片预处理结果：视觉模型调用失败，未形成可靠字段。"
+            f"\n失败原因：{compact_text(error, limit=300)}"
+            "\n执行建议：不要直接建单；请用户检查视觉模型配置或提供文字/表格内容。"
+        )
+        result["attachment_context"] = "\n\n".join(
+            part for part in [fallback_context, base_attachment_context] if compact_text(part)
+        )
+        result["planner_hints"] = [
+            "视觉模型调用失败，禁止基于图片直接调用写工具。",
+            "应先说明视觉识别不可用，并请求用户重新上传或补充可解析文本。",
+        ]
+        result["skill_hint"] = "导入 图片 视觉模型不可用"
+        trace.append(f"Image preprocessing failed before extraction completed: {error}")
+        return result
     if not extracted:
         fallback_context = (
             "图片预处理结果：无法提取稳定字段。"
@@ -1607,13 +1665,23 @@ async def preprocess_document_request(
         result["skill_hint"] = "导入 图片 识别失败"
         return result
 
-    validation = await _validate_image_document_payload(
-        request=request,
-        config=config,
-        model_requester=model_requester,
-        candidate=extracted,
-        trace=trace,
-    )
+    try:
+        validation = await _validate_image_document_payload(
+            request=request,
+            config=config,
+            model_requester=model_requester,
+            candidate=extracted,
+            trace=trace,
+        )
+    except Exception as error:
+        validation = {
+            "approved": False,
+            "import_target": "none",
+            "confidence": 0.0,
+            "issues": [f"图片复核调用失败：{compact_text(error, limit=240)}"],
+            "approved_fields": {},
+        }
+        trace.append(f"Image validation failed; candidate marked unapproved: {error}")
     approved_fields = (
         validation.get("approved_fields", {})
         if isinstance(validation.get("approved_fields"), Mapping)
@@ -1629,15 +1697,16 @@ async def preprocess_document_request(
     target = compact_text(fields.get("import_target") or fields.get("target") or "").lower()
 
     guidance_lines = [
-        "图片预处理说明：以下字段来自图片预处理，只能视为候选业务字段，不等于已匹配系统主数据。",
+        "图片预处理说明：以下字段来自 Gemini Vision 对附件的结构化抽取，只能视为候选业务字段，不等于已匹配系统主数据。",
+        "后续文本 Agent 不得重新看图、改写图片抽取出的主体名称，或引入图片预处理结果之外的供应商/客户/商品名称。",
         "主流程必须按 ReAct 顺序继续：先查主数据，再决定是否追问用户，最后才允许创建待确认动作。",
         "如果供应商/客户/商品在系统中缺失、歧义或低置信度，必须先追问用户，不要先调用写工具再补救。",
         "具体追问顺序和选项设计应遵循已匹配 skill 的规则，不在图片预处理阶段写死。",
     ]
     if supplier_name:
-        guidance_lines.append(f"待解析供应商主体：{supplier_name}")
+        guidance_lines.append(f"图片候选供应商主体（必须原样引用，不得改写为其他名称）：{supplier_name}")
     if customer_name:
-        guidance_lines.append(f"待解析客户主体：{customer_name}")
+        guidance_lines.append(f"图片候选客户主体（必须原样引用，不得改写为其他名称）：{customer_name}")
     if target and target != "none":
         guidance_lines.append(f"候选业务目标：{target}")
     if _wants_image_import(request.prompt):
@@ -2338,6 +2407,8 @@ async def synthesize_final_answer(
                 '- Only set interruption:null when task is fully complete.\n'
                 '- Every option must be a clickable action, not an open question.\n'
                 '- Include "Cancel" as last option.\n'
+                '- For image imports, do not invent or rename supplier/customer/product entities beyond the attachment context.\n'
+                '- If image context says the image is missing, unreadable, or unverified, ask for re-upload or clarification instead of creating business facts.\n'
                 '- RAW JSON ONLY. No markdown fences. No explanation outside the JSON.\n'
                 f'Plan mode: {plan.mode}'
             ),

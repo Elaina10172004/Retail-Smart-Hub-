@@ -16,6 +16,8 @@ triggers:
   - excel
   - csv
 tools:
+  - get_master_data_overview
+  - create_supplier_profile
   - create_procurement_order
   - create_sales_order
   - get_procurement_detail
@@ -45,6 +47,7 @@ enabled: true
    - 是否新建供应商，还是映射到已有供应商。
    - 是否新建客户，还是映射到已有客户。
    - 是否新建商品，还是映射到已有商品。
+   - 如果用户选择新建供应商，调用 `create_supplier_profile` 创建待确认动作；确认完成后再继续处理商品和采购单。
 11. 如果一次追问涉及多个实体，允许先按“供应商 / 客户 / 商品”分组概括，但选项必须可执行，不能只是复述识别结果。
 12. 如果用户已经在上一轮通过 interruption 或明确回复确认某个方向，下一轮应直接沿该方向继续，而不是重复问同一个问题。
 13. **商品价格字段规则**：创建商品主数据时，只需填写图片中实际存在的字段。
@@ -52,3 +55,4 @@ enabled: true
    - 销售单场景：只需要 `salePrice`（销售价）。不要追问进货价。
    - 图片中识别到的单价默认作为对应场景的价格字段，未识别到的不要编造或追问。
    - 除非图片明确标注了"销售价"或"进货价"标签，否则按上述场景规则处理。
+14. 采购导入中，如果供应商已经存在或已经确认新建，且用户选择“新建商品”，优先直接调用 `create_procurement_order`，在采购单明细中传入 `productName`、`quantity`、`unitCost`、`unit` 等字段；不要额外逐个调用 `create_product_master_data`。

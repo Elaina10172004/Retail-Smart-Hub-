@@ -786,7 +786,7 @@ def _build_gemini_request(
         mode = "NONE" if tool_choice == "none" else "AUTO"
         body["toolConfig"] = {"functionCallingConfig": {"mode": mode}}
     if not config.requires_reasoning_for_tool_calls(role):
-        body["generationConfig"] = {"temperature": 0.3}
+        body["generationConfig"] = {"temperature": 0.0 if role == "vision" else 0.3}
     return endpoint, headers, body
 
 
@@ -814,7 +814,7 @@ def _build_openai_compatible_request(
         body["tools"] = sanitized_tools
         body["tool_choice"] = tool_choice or "auto"
     if not config.requires_reasoning_for_tool_calls(role):
-        body["temperature"] = 0.3
+        body["temperature"] = 0.0 if role == "vision" else 0.3
     else:
         # DeepSeek V4 enables thinking by default. Explicitly disable it
         # to skip chain-of-thought token generation (saves 5-10s per call).

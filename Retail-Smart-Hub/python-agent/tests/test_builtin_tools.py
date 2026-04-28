@@ -12,13 +12,17 @@ class BuiltinToolsTests(IsolatedAsyncioTestCase):
         disabled = AgentConfig(tavily_api_key="")
         enabled = AgentConfig(tavily_api_key="test-key")
 
+        self.assertTrue(has_builtin_tool(disabled, "web_browse"))
         self.assertFalse(has_builtin_tool(disabled, "web_search"))
-        self.assertEqual(build_builtin_tool_definitions(disabled), [])
+        disabled_defs = build_builtin_tool_definitions(disabled)
+        self.assertEqual(len(disabled_defs), 1)
+        self.assertEqual(disabled_defs[0]["function"]["name"], "web_browse")
 
         definitions = build_builtin_tool_definitions(enabled)
         self.assertTrue(has_builtin_tool(enabled, "web_search"))
-        self.assertEqual(len(definitions), 1)
-        self.assertEqual(definitions[0]["function"]["name"], "web_search")
+        self.assertTrue(has_builtin_tool(enabled, "web_browse"))
+        self.assertEqual(len(definitions), 2)
+        self.assertEqual(definitions[0]["function"]["name"], "web_browse")
 
     async def test_execute_web_search_returns_normalized_tavily_payload(self) -> None:
         config = AgentConfig(tavily_api_key="test-key")

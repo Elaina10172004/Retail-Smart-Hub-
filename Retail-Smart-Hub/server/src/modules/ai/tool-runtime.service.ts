@@ -921,6 +921,31 @@ const WRITE_TOOL_SCHEMAS: Record<RuntimeWriteToolName, RuntimeToolSchemaDefiniti
       })
       .strict(),
   },
+  create_supplier_profile: {
+    type: 'write',
+    name: 'create_supplier_profile',
+    description: 'Create supplier profile (approval required).',
+    requiredPermissions: ['settings.master-data'],
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name'],
+      properties: {
+        name: { type: 'string' },
+        contactName: { type: 'string' },
+        phone: { type: 'string' },
+        leadTimeDays: { type: 'integer', minimum: 1, description: 'Default 3 when unknown.' },
+      },
+    },
+    parser: z
+      .object({
+        name: z.string().trim().min(1),
+        contactName: z.string().trim().optional(),
+        phone: z.string().trim().optional(),
+        leadTimeDays: z.coerce.number().int().positive().optional(),
+      })
+      .strict(),
+  },
   create_product_master_data: {
     type: 'write',
     name: 'create_product_master_data',
@@ -1729,6 +1754,18 @@ function executeTypedWriteTool(
         summary = `待确认：创建客户档案 ${payload.name || '-'}。`;
         confirmationMessage = `将创建客户档案「${payload.name || '-'}」，确认后执行写入，是否继续？`;
         break;
+      case 'create_supplier_profile': {
+        const leadTimeDays = Number(args.leadTimeDays || 3);
+        payload = {
+          name: String(args.name || '').trim(),
+          contactName: typeof args.contactName === 'string' ? args.contactName.trim() : undefined,
+          phone: typeof args.phone === 'string' ? args.phone.trim() : undefined,
+          leadTimeDays: Number.isFinite(leadTimeDays) && leadTimeDays > 0 ? Math.trunc(leadTimeDays) : 3,
+        };
+        summary = `待确认：创建供应商档案 ${payload.name || '-'}。`;
+        confirmationMessage = `将创建供应商档案「${payload.name || '-'}」（提前期 ${payload.leadTimeDays} 天），确认后执行写入，是否继续？`;
+        break;
+      }
       case 'create_product_master_data': {
         const supplierName = String(args.preferredSupplierName || '').trim();
         const supplierRef = supplierName ? resolveActiveSupplierReference(supplierName) : undefined;

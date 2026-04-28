@@ -2,6 +2,8 @@
 name: RetailFlow Operations
 description: 处理采购、销售、发货、验收、入库、收款、付款等受控业务操作，统一走待确认动作。
 triggers:
+  - 创建供应商
+  - 供应商档案
   - 创建采购单
   - 创建销售单
   - 创建订单
@@ -16,6 +18,7 @@ triggers:
   - 合并
   - pending action
 tools:
+  - create_supplier_profile
   - create_procurement_order
   - create_sales_order
   - advance_arrival_status
@@ -47,6 +50,7 @@ enabled: true
 3. `register_receipt` → 登记收款（发货单→收款单）
 
 ### 补充操作
+- `create_supplier_profile` → 创建供应商档案（待确认），用于导入采购单时补齐缺失供应商主数据
 - `generate_shortage_procurement` → 从库存缺货分析生成采购建议
 - `register_payment` → 登记付款（采购应付）
 
@@ -54,6 +58,7 @@ enabled: true
 
 1. **所有写操作走 pending action**：创建后状态为 `awaiting_confirmation`，不声称已落库
 2. **先验证再创建**：检查供应商/客户/商品主数据是否存在，不存在时先追问
+   - 采购单允许在 `create_procurement_order` 明细里直接新增商品；供应商缺失时先创建/确认供应商，供应商已可用后再用采购单工具一次性创建采购单和新品明细。
 3. **流转前置检查**：
    - 发货合并：所选销售单必须同一客户
    - 验收合并：所选采购单必须同一供应商

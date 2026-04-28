@@ -31,8 +31,10 @@ import {
 import { dispatchShipment, listShipments } from '../shipping/shipping.service';
 import {
   createProduct,
+  createSupplier,
   resolveActiveSupplierReference,
   type CreateProductPayload as CreateProductMasterDataPayload,
+  type CreateSupplierPayload,
 } from '../settings/settings.service';
 import { applySensitiveMemoryPendingAction } from './memory-update.service';
 import type { AiApproval, AiPendingAction, AiToolCallRecord } from './dto/tool.dto';
@@ -93,6 +95,7 @@ const WRITE_PERMISSION_GUIDE: Record<string, { label: string; suggestion: string
 
 const WRITE_TOOL_NAMES = new Set<WriteToolName>([
   'create_customer_profile',
+  'create_supplier_profile',
   'create_product_master_data',
   'generate_shortage_procurement',
   'advance_arrival_status',
@@ -106,6 +109,7 @@ const WRITE_TOOL_NAMES = new Set<WriteToolName>([
 
 const UNDOABLE_WRITE_TOOL_NAMES = new Set<WriteToolName>([
   'create_customer_profile',
+  'create_supplier_profile',
   'register_receipt',
   'register_payment',
   'create_sales_order',
@@ -113,6 +117,7 @@ const UNDOABLE_WRITE_TOOL_NAMES = new Set<WriteToolName>([
 
 export type WriteToolName =
   | 'create_customer_profile'
+  | 'create_supplier_profile'
   | 'create_product_master_data'
   | 'generate_shortage_procurement'
   | 'advance_arrival_status'
@@ -125,6 +130,7 @@ export type WriteToolName =
 
 interface PendingActionPayloadMap {
   create_customer_profile: CreateCustomerPayload;
+  create_supplier_profile: CreateSupplierPayload;
   create_product_master_data: CreateProductMasterDataPayload & {
     preferredSupplierName: string;
   };
@@ -204,6 +210,9 @@ interface PendingActionExecutionResultMap {
           status: string;
         };
       };
+  create_supplier_profile: {
+    supplierId: string;
+  };
   register_receipt: {
     receivableId: string;
     receiptId: string;
@@ -529,6 +538,37 @@ function undoCustomerCreation(execution: PendingActionExecutionResultMap['create
   return `已撤回：客户档案 ${execution.customerId} 已恢复为删除前状态。`;
 }
 
+function undoSupplierCreation(execution: PendingActionExecutionResultMap['create_supplier_profile']) {
+  const supplier = db.prepare<{
+    id: string;
+    name: string;
+    productReferenceCount: number;
+    purchaseReferenceCount: number;
+  }>(`
+    SELECT
+      s.id,
+      s.name,
+      (SELECT COUNT(*) FROM products p WHERE p.preferred_supplier_id = s.id) as productReferenceCount,
+      (SELECT COUNT(*) FROM purchase_orders po WHERE po.supplier_id = s.id) as purchaseReferenceCount
+    FROM suppliers s
+    WHERE s.id = ?
+  `).get(execution.supplierId);
+
+  if (!supplier) {
+    throw new Error('供应商档案不存在，无法撤回');
+  }
+
+  if (supplier.productReferenceCount > 0 || supplier.purchaseReferenceCount > 0) {
+    throw new Error('该供应商已经被商品或采购单引用，不能自动撤回');
+  }
+
+  db.prepare('DELETE FROM suppliers WHERE id = ?').run(execution.supplierId);
+  appendAuditLog('undo_create_supplier', 'supplier', execution.supplierId, {
+    name: supplier.name,
+  });
+  return `已撤回：供应商档案 ${execution.supplierId} 已删除回滚。`;
+}
+
 export function getPendingAction(actionId: string, userId: string) {
   const row = getPendingActionRow(actionId);
   if (!row) {
@@ -638,6 +678,22 @@ export function confirmPendingAction(actionId: string, userId: string, username:
       `- 渠道偏好：${customer.channelPreference}`,
       `- 联系人：${customer.contactName || '-'}`,
       `- 电话：${customer.phone || '-'}`,
+    ].join('\n');
+  } else if (row.actionName === 'create_supplier_profile') {
+    const payload = JSON.parse(row.payload) as PendingActionPayloadMap['create_supplier_profile'];
+    const supplier = createSupplier(payload);
+    executionResult = {
+      supplierId: supplier.id,
+    };
+    summary = `已创建供应商档案 ${supplier.name}。`;
+    trace.push(`执行供应商档案创建：${supplier.id}`);
+    reply = [
+      '已确认并执行：供应商档案创建完成。',
+      `- 供应商编号：${supplier.id}`,
+      `- 供应商名称：${supplier.name}`,
+      `- 联系人：${supplier.contactName || '-'}`,
+      `- 电话：${supplier.phone || '-'}`,
+      `- 提前期：${supplier.leadTimeDays} 天`,
     ].join('\n');
   } else if (row.actionName === 'create_product_master_data') {
     const payload = JSON.parse(row.payload) as PendingActionPayloadMap['create_product_master_data'];
@@ -873,6 +929,14 @@ export function undoConfirmedAction(actionId: string, userId: string, username: 
     reply = undoCustomerCreation(execution);
     summary = `已撤回客户档案操作 ${row.id}。`;
     trace.push(`回滚客户档案：${execution.customerId}`);
+  } else if (row.actionName === 'create_supplier_profile') {
+    const execution = parseExecutionResult<'create_supplier_profile'>(row);
+    if (!execution) {
+      throw new Error('缺少供应商档案创建的执行记录，无法撤回');
+    }
+    reply = undoSupplierCreation(execution);
+    summary = `已撤回供应商档案操作 ${row.id}。`;
+    trace.push(`回滚供应商档案：${execution.supplierId}`);
   } else if (row.actionName === 'register_receipt') {
     const execution = parseExecutionResult<'register_receipt'>(row);
     if (!execution) {

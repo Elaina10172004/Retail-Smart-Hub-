@@ -227,6 +227,10 @@ class AgentConfig:
     small_base_url: str = field(default_factory=lambda: os.getenv("AI_SMALL_BASE_URL", "").rstrip("/"))
     small_model: str = field(default_factory=lambda: os.getenv("AI_SMALL_MODEL", ""))
     small_api_key: str = field(default_factory=lambda: os.getenv("AI_SMALL_API_KEY", ""))
+    vision_provider: str = field(default_factory=lambda: os.getenv("AI_VISION_PROVIDER", ""))
+    vision_base_url: str = field(default_factory=lambda: os.getenv("AI_VISION_BASE_URL", "").rstrip("/"))
+    vision_model: str = field(default_factory=lambda: os.getenv("AI_VISION_MODEL", ""))
+    vision_api_key: str = field(default_factory=lambda: os.getenv("AI_VISION_API_KEY", ""))
     large_provider: str = field(default_factory=lambda: os.getenv("AI_LARGE_PROVIDER", os.getenv("AI_PROVIDER", "openai")))
     large_base_url: str = field(default_factory=lambda: os.getenv("AI_LARGE_BASE_URL", "").rstrip("/"))
     large_model: str = field(default_factory=lambda: os.getenv("AI_LARGE_MODEL", ""))
@@ -380,9 +384,30 @@ class AgentConfig:
     def resolve_model_profile(self, role: str = "large") -> Dict[str, str]:
         role_lower = str(role or "").strip().lower()
         if role_lower == "vision":
-            # Vision role: use small model config (typically a fast vision model)
-            # Falls back through small -> large chain
-            normalized_role = "small"
+            # Vision requires a real multimodal endpoint. Prefer explicit vision
+            # config, then Gemini/OpenAI if configured, and only then fall back to
+            # the small profile. This avoids text-only providers hallucinating OCR.
+            explicit_provider = (self.vision_provider or "").strip()
+            if explicit_provider:
+                defaults = self._resolve_provider_defaults(explicit_provider)
+                return {
+                    "provider": defaults["provider"],
+                    "base_url": (self.vision_base_url or defaults["base_url"]).rstrip("/"),
+                    "model": (self.vision_model or defaults["model"]).strip(),
+                    "api_key": (self.vision_api_key or defaults["api_key"]).strip(),
+                    "api_key_env": "AI_VISION_API_KEY" if (self.vision_api_key or "").strip() else defaults["api_key_env"],
+                    "role": "vision",
+                }
+            if (self.gemini_api_key or "").strip():
+                defaults = self._resolve_provider_defaults("gemini")
+                return {**defaults, "role": "vision"}
+            if (self.openai_api_key or "").strip():
+                defaults = self._resolve_provider_defaults("openai")
+                return {**defaults, "role": "vision"}
+            # If no multimodal key is configured, fail explicitly in the
+            # vision call instead of silently using a text-only small model.
+            defaults = self._resolve_provider_defaults("gemini")
+            return {**defaults, "role": "vision"}
         elif role_lower == "small":
             normalized_role = "small"
         else:
