@@ -335,7 +335,15 @@ export function buildAiChatRuntimeRequestWithCheckpoint(input: {
     '请基于已恢复的附件、上一轮识别结果和该选择，继续处理剩余主数据缺口或下一步导入动作。',
     `用户当前输入：${effectivePrompt}`,
   ].join('\n');
-  const effectiveAttachments = input.attachments.length > 0 ? input.attachments : checkpoint.requestAttachments;
+  // Use current attachments if provided; otherwise restore from checkpoint but
+  // strip heavy base64 payload — the image was already processed in the first turn.
+  const rawAttachments = input.attachments.length > 0 ? input.attachments : checkpoint.requestAttachments;
+  const effectiveAttachments = rawAttachments.map((att) => {
+    if (att.kind === 'image') {
+      return { ...att, imageDataUrl: undefined, imageWidth: undefined, imageHeight: undefined };
+    }
+    return att;
+  });
   const effectiveHistory = buildHistoryFromCheckpoint(checkpoint);
 
   return {
