@@ -2,7 +2,7 @@
 import asyncio
 import json
 import re
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Mapping, Optional, Sequence
 
 from fastapi import HTTPException
 
@@ -1967,6 +1967,7 @@ async def run_model_tool_loop(
     role: str = "large",
     trace_prefix: str = "Tool loop",
     max_rounds: int = 5,
+    on_tool_start: Callable[[str], Awaitable[None]] | None = None,
 ) -> ToolLoopState:
     state = ToolLoopState(messages=messages, resolved_model=config.resolve_model_profile(role)["model"])
 
@@ -2033,6 +2034,9 @@ async def run_model_tool_loop(
                     return build_tool_execution_error(fn_name, error)
 
         if valid_calls:
+            if on_tool_start:
+                for _, _, fn_name, _ in valid_calls:
+                    await on_tool_start(fn_name)
             executions = await asyncio.gather(
                 *[_execute_one(fn_name, fn_args) for _, _, fn_name, fn_args in valid_calls],
                 return_exceptions=True,
@@ -2471,6 +2475,7 @@ async def run_chat(
     node_bridge: NodeToolBridge,
     rag: RagEngine,
     model_requester: ModelRequestFn = default_model_requester,
+    on_progress: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> ChatResponse:
     prompt = request.prompt.strip()
     if request.resume:
@@ -2570,6 +2575,11 @@ async def run_chat(
             answer_meta=answer_meta,
         )
 
+    # Progress: starting context gathering
+    if on_progress:
+        has_img = any(compact_text(getattr(a, "kind", "")).lower() == "image" for a in effective_request.attachments)
+        await on_progress("status", "正在识别图片内容..." if has_img else "正在分析请求...")
+
     context = await resolve_context_bundle(
         request=effective_request,
         prompt=prompt,
@@ -2579,6 +2589,9 @@ async def run_chat(
         model_requester=model_requester,
         trace=trace,
     )
+
+    if on_progress:
+        await on_progress("status", "正在查询系统数据，匹配主资料...")
 
     # After image preprocessing, strip raw image data from attachments so
     # text-only models (DeepSeek) don't receive image_url content blocks.
@@ -2658,6 +2671,9 @@ async def run_chat(
         runtime_tool_context=plan_context,
         system_mode="planner_executor",
     )
+    if on_progress:
+        await on_progress("status", "正在处理...")
+
     tool_state = await run_model_tool_loop(
         request=effective_request,
         config=config,
@@ -2667,7 +2683,14 @@ async def run_chat(
         model_requester=model_requester,
         trace=trace,
         trace_prefix="Plan/Execute",
+        on_tool_start=(
+            (lambda name: on_progress("tool", f"正在调用：{name}..."))
+            if on_progress else None
+        ),
     )
+    if on_progress:
+        await on_progress("status", "正在生成回复...")
+
     tool_state = await synthesize_final_answer(
         request=effective_request,
         config=config,

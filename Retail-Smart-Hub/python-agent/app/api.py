@@ -29,6 +29,7 @@ async def run_chat(
     *,
     runtime: AgentRuntime,
     model_requester: ModelRequestFn = default_model_requester,
+    on_progress=None,
 ):
     return await run_chat_flow(
         request,
@@ -36,6 +37,7 @@ async def run_chat(
         node_bridge=runtime.node_bridge,
         rag=runtime.rag,
         model_requester=model_requester,
+        on_progress=on_progress,
     )
 
 
@@ -93,14 +95,40 @@ def create_app(
     async def chat_stream(payload: ChatRequest, runtime: AgentRuntime = Depends(get_runtime)) -> StreamingResponse:
         async def event_stream() -> Any:
             try:
-                initial_message = (
-                    "正在读取附件并分析内容...\n\n"
-                    if payload.attachments
-                    else "正在分析请求...\n\n"
-                )
-                yield f"event: delta\ndata: {json_dumps({'replyDelta': initial_message})}\n\n"
+                progress_queue: asyncio.Queue = asyncio.Queue()
 
-                result = await run_chat(payload, runtime=runtime, model_requester=model_requester)
+                async def on_progress(kind: str, msg: str) -> None:
+                    await progress_queue.put((kind, msg))
+
+                # Kick off the chat pipeline in background
+                chat_task = asyncio.create_task(
+                    run_chat(payload, runtime=runtime, model_requester=model_requester, on_progress=on_progress)
+                )
+
+                # Yield initial status
+                initial = (
+                    "正在读取附件...\n" if payload.attachments else "正在分析...\n"
+                )
+                yield f"event: delta\ndata: {json_dumps({'replyDelta': initial})}\n\n"
+
+                # Stream progress updates while pipeline runs
+                last_status = ""
+                while not chat_task.done():
+                    try:
+                        kind, msg = await asyncio.wait_for(progress_queue.get(), timeout=0.15)
+                        if kind == "status":
+                            last_status = msg
+                        line = msg + "\n"
+                        yield f"event: delta\ndata: {json_dumps({'replyDelta': line})}\n\n"
+                    except asyncio.TimeoutError:
+                        continue
+
+                result = await chat_task
+
+                # If there was a status message, add a newline separator
+                if last_status:
+                    yield f"event: delta\ndata: {json_dumps({'replyDelta': '\n'})}\n\n"
+
                 meta = {
                     "toolCalls": [item.model_dump() for item in result.toolCalls],
                     "citations": result.citations,
