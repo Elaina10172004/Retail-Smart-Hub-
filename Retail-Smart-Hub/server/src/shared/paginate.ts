@@ -2,7 +2,7 @@
  * Zero-change pagination wrapper for existing list functions.
  *
  * Usage in routes:
- *   paginateList(req, (s) => listSomething(), { searchFields: ['id', 'name'] })
+ *   paginateList(req, () => listSomething(), { searchFields: ['id', 'name'] })
  *
  * The original list function is called once (returns all rows), then
  * filtering/pagination is applied in-memory. When datasets grow large,
@@ -28,18 +28,23 @@ export function paginateList<T>(
 
   let rows = fetcher();
 
-  // Server-side search: filter by keywords across specified fields
-  if (search && options?.searchFields?.length) {
+  // Server-side search: each keyword must match at least one field.
+  // By default, ALL string fields on each row are searchable.
+  // Provide searchFields to restrict which fields are searched.
+  if (search) {
     const keywords = search.split(/[\s+]+/).map((k) => k.trim()).filter(Boolean);
     if (keywords.length > 0) {
-      rows = rows.filter((row) =>
-        keywords.every((kw) =>
-          options.searchFields!.some((field) => {
-            const value = (row as Record<string, unknown>)[field];
+      const targetFields = options?.searchFields?.length ? options.searchFields : null;
+      rows = rows.filter((row) => {
+        const obj = row as Record<string, unknown>;
+        const fields = targetFields ?? Object.keys(obj).filter((k) => typeof obj[k] === 'string');
+        return keywords.every((kw) =>
+          fields.some((field) => {
+            const value = obj[field];
             return typeof value === 'string' && value.toLowerCase().includes(kw.toLowerCase());
           })
-        )
-      );
+        );
+      });
     }
   }
 
