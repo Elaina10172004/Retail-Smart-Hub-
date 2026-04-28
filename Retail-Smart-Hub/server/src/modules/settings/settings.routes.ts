@@ -1,4 +1,4 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission, resetUserPassword, verifyCurrentPassword } from '../../shared/auth';
 import { isApiError } from '../../shared/api-error';

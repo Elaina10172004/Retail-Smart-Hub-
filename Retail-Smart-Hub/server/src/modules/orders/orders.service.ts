@@ -1,4 +1,4 @@
-﻿import { appendAuditLog, appendInventoryMovement, createReceivableForSalesOrder, db, nextDocumentId, upsertCustomerProfile } from '../../database/db';
+import { appendAuditLog, appendInventoryMovement, createReceivableForSalesOrder, db, nextDocumentId, upsertCustomerProfile } from '../../database/db';
 import { currentDateString, currentDateTimeString, formatCurrency } from '../../shared/format';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
 import { ensureCustomerProfiles } from '../../database/db';
@@ -296,7 +296,7 @@ function detectStockStatus(items: OrderItemPayload[]): StockStatus {
           FROM purchase_order_items poi
           JOIN products p ON p.id = poi.product_id
           JOIN purchase_orders po ON po.id = poi.purchase_order_id
-          WHERE p.sku = ? AND p.status = 'active' AND po.status IN ('采购中', '部分到货')
+          WHERE p.sku = ? AND p.status = 'active' AND po.status IN ('采购中', '到货', '部分到货')
         ), 0) as transitStock
     `).get(item.sku, item.sku);
 
@@ -383,6 +383,7 @@ export function getOrderFormOptions(): OrderFormOptions {
       COALESCE(channel_preference, '-') as channelPreference
     FROM customers
     WHERE status = 'active'
+      AND customer_type = 'reseller'
     ORDER BY total_sales DESC, last_order_date DESC, name COLLATE NOCASE ASC, id ASC
   `).all();
 
@@ -445,6 +446,7 @@ export function resolveCreateOrderRequestPayload(payload: CreateOrderRequestPayl
     FROM customers
     WHERE id = ?
       AND status = 'active'
+      AND customer_type = 'reseller'
   `).get(customerId);
   if (!customer) {
     throw new Error('Active customer not found');

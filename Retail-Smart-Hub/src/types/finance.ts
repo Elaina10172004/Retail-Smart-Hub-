@@ -1,4 +1,4 @@
-﻿export type ReceivableStatus = '未收款' | '部分收款' | '已收款' | '逾期';
+export type ReceivableStatus = '未收款' | '部分收款' | '已收款' | '逾期';
 export type PayableStatus = '未付款' | '部分付款' | '已付款' | '逾期';
 
 export interface FinanceOverview {
@@ -19,6 +19,17 @@ export interface ReceiptRecord {
   receivedAt: string;
   method: string;
   remark?: string;
+  items: ReceiptRecordItem[];
+}
+
+export interface ReceiptRecordItem {
+  id: string;
+  receiptRecordId: string;
+  salesOrderItemId: string;
+  productId?: string;
+  sku: string;
+  productName: string;
+  amount: number;
 }
 
 export interface PaymentRecord {
@@ -48,7 +59,20 @@ export interface ReceivableDetailRecord extends ReceivableRecord {
   customerName: string;
   orderChannel: string;
   remark?: string;
+  items: ReceivableLineItem[];
   records: ReceiptRecord[];
+}
+
+export interface ReceivableLineItem {
+  id: string;
+  productId?: string;
+  sku: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  lineAmount: number;
+  receivedAmount: number;
+  remainingAmount: number;
 }
 
 export interface PayableRecord {
@@ -70,7 +94,11 @@ export interface PayableDetailRecord extends PayableRecord {
 }
 
 export interface FinanceActionPayload {
-  amount: number;
+  amount?: number;
   method?: string;
   remark?: string;
+  items?: Array<{
+    salesOrderItemId: string;
+    amount: number;
+  }>;
 }

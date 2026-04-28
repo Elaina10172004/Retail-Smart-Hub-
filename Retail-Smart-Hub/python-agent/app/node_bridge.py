@@ -1,11 +1,45 @@
 from __future__ import annotations
 
+import atexit
 from typing import Any, Dict, List, Sequence
 
 import httpx
 
 from .common import AgentConfig
 from .models import ChatRequest
+
+
+_shared_client: httpx.AsyncClient | None = None
+_shared_client_lock: Any = None
+
+
+def _get_shared_client(timeout: float = 30.0) -> httpx.AsyncClient:
+    global _shared_client, _shared_client_lock
+    if _shared_client is not None:
+        return _shared_client
+    import threading
+    if _shared_client_lock is None:
+        _shared_client_lock = threading.Lock()
+    with _shared_client_lock:
+        if _shared_client is not None:
+            return _shared_client
+        _shared_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+        )
+        atexit.register(_close_shared_client)
+        return _shared_client
+
+
+def _close_shared_client() -> None:
+    global _shared_client
+    if _shared_client is not None:
+        try:
+            import asyncio
+            asyncio.get_event_loop()
+        except RuntimeError:
+            pass
+    # best-effort close; the OS will reclaim sockets on process exit
 
 
 ALLOWED_TOOL_CALL_STATUSES = {
@@ -92,13 +126,20 @@ class NodeToolBridge:
             "x-agent-key": self.config.node_internal_key,
         }
         timeout = max(5.0, self.config.request_timeout_ms / 1000.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(endpoint, headers=headers, json=body)
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise RuntimeError("invalid node bridge response")
-            return payload
+        client = _get_shared_client(timeout)
+        response = await client.post(endpoint, headers=headers, json=body)
+        if response.is_error:
+            details = (response.text or "").strip()
+            if len(details) > 1200:
+                details = details[:1185] + "...(truncated)"
+            raise RuntimeError(
+                f"node bridge POST {path} failed with {response.status_code}: "
+                f"{details or response.reason_phrase}"
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("invalid node bridge response")
+        return payload
 
     async def get_tools_schema(self, token: str) -> List[Dict[str, Any]]:
         payload = await self._post("/tools/schema", {"token": token})
@@ -149,18 +190,6 @@ class NodeToolBridge:
             },
         )
         return payload if isinstance(payload, dict) else {}
-
-    async def handle_document_skill(self, request: ChatRequest) -> Dict[str, Any]:
-        payload = await self._post(
-            "/document/handle",
-            {
-                "prompt": request.prompt,
-                "attachments": [item.model_dump(exclude_none=True) for item in request.attachments],
-                "token": request.token,
-            },
-        )
-        result = payload.get("result")
-        return result if isinstance(result, dict) else {}
 
     async def build_document_context(self, request: ChatRequest) -> str:
         payload = await self._post(

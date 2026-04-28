@@ -5,9 +5,10 @@ import { isApiError } from '../../shared/api-error';
 import { fail, ok } from '../../shared/response';
 import { ensurePythonRuntime } from './ai.runtime-facade';
 import {
-  buildAiChatRuntimeRequest,
+  buildAiChatRuntimeRequestWithCheckpoint,
   finalizeAiChatSideEffects,
   metaToEnvelope,
+  persistInterruptionCheckpointResult,
   resolveTenantId,
   writeSseEvent,
 } from './ai.routes.shared';
@@ -15,29 +16,35 @@ import {
 export function registerAiChatRoutes(aiRouter: Router) {
   aiRouter.post('/chat', async (req, res) => {
     try {
-      const { prompt, conversationId, attachments, history } = parseAiChatBody(req.body);
+      const { prompt, conversationId, resume, attachments, history } = parseAiChatBody(req.body);
 
-      if (!prompt && attachments.length === 0) {
+      if (!prompt && attachments.length === 0 && !resume) {
         return fail(res, 400, 'Prompt or attachments is required');
       }
 
-      const runtimeRequest = buildAiChatRuntimeRequest({
+      const { runtimeRequest, resumedCheckpoint } = buildAiChatRuntimeRequestWithCheckpoint({
         prompt,
         conversationId,
+        resume,
         attachments,
         history,
         req,
       });
       const execution = await generateAiReplyWithRuntime(runtimeRequest);
       const result = execution.data;
+      persistInterruptionCheckpointResult({
+        result,
+        runtimeRequest,
+        resumedCheckpoint,
+      });
 
       const finalized = finalizeAiChatSideEffects({
         authUserId: req.auth?.id || 'anonymous',
         authUsername: req.auth?.username || 'unknown',
         tenantId: resolveTenantId(req.auth?.department),
-        prompt,
-        conversationId,
-        attachments,
+        prompt: runtimeRequest.prompt,
+        conversationId: runtimeRequest.conversationId || conversationId,
+        attachments: runtimeRequest.attachments || attachments,
         result,
         runtimeUsed: execution.runtime,
       });
@@ -58,12 +65,14 @@ export function registerAiChatRoutes(aiRouter: Router) {
   aiRouter.post('/chat/stream', async (req, res) => {
     let prompt = '';
     let conversationId = '';
+    let resume: ReturnType<typeof parseAiChatBody>['resume'];
     let attachments: ReturnType<typeof parseAiChatBody>['attachments'] = [];
     let history: ReturnType<typeof parseAiChatBody>['history'] = [];
     try {
       const parsed = parseAiChatBody(req.body);
       prompt = parsed.prompt;
       conversationId = parsed.conversationId;
+      resume = parsed.resume;
       attachments = parsed.attachments;
       history = parsed.history;
     } catch (error) {
@@ -76,7 +85,7 @@ export function registerAiChatRoutes(aiRouter: Router) {
       );
     }
 
-    if (!prompt && attachments.length === 0) {
+    if (!prompt && attachments.length === 0 && !resume) {
       return fail(res, 400, 'Prompt or attachments is required');
     }
 
@@ -131,9 +140,10 @@ export function registerAiChatRoutes(aiRouter: Router) {
     req.on('aborted', markClosed);
 
     try {
-      const runtimeRequest = buildAiChatRuntimeRequest({
+      const { runtimeRequest, resumedCheckpoint } = buildAiChatRuntimeRequestWithCheckpoint({
         prompt,
         conversationId,
+        resume,
         attachments,
         history,
         req,
@@ -157,6 +167,11 @@ export function registerAiChatRoutes(aiRouter: Router) {
         },
       });
       const result = execution.data;
+      persistInterruptionCheckpointResult({
+        result,
+        runtimeRequest,
+        resumedCheckpoint,
+      });
 
       if (streamClosed) {
         clearInterval(heartbeat);
@@ -167,9 +182,9 @@ export function registerAiChatRoutes(aiRouter: Router) {
         authUserId: req.auth?.id || 'anonymous',
         authUsername: req.auth?.username || 'unknown',
         tenantId: resolveTenantId(req.auth?.department),
-        prompt,
-        conversationId,
-        attachments,
+        prompt: runtimeRequest.prompt,
+        conversationId: runtimeRequest.conversationId || conversationId,
+        attachments: runtimeRequest.attachments || attachments,
         result,
         runtimeUsed: execution.runtime,
       });

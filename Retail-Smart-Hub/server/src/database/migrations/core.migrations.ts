@@ -1,4 +1,4 @@
-﻿interface MigrationContext {
+interface MigrationContext {
   ensureColumnExists: (tableName: string, columnName: string, definition: string) => void;
   exec: (sql: string) => void;
   currentDate: string;

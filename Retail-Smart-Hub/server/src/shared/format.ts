@@ -1,4 +1,4 @@
-﻿export function formatCurrency(value: number) {
+export function formatCurrency(value: number) {
   return `¥${value.toLocaleString('zh-CN', {
     minimumFractionDigits: value % 1 === 0 ? 0 : 2,
     maximumFractionDigits: 2,

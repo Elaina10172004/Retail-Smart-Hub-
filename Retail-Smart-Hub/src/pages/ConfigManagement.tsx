@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Database, FileText, KeyRound, Loader2, RefreshCw, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -19,6 +19,7 @@ import {
   uploadAiKnowledgeDocument,
 } from '@/services/api/ai';
 import type {
+  AiApiKeySource,
   AiKnowledgeDocumentSummary,
   AiMemoryFact,
   AiMemoryProfileResponse,
@@ -44,7 +45,6 @@ interface RuntimeConfigDraft {
   smallProvider: AiProvider;
   largeProvider: AiProvider;
   tavily: TavilyDraft;
-  layeredAgentEnabled: boolean;
 }
 
 interface MemoryDraft {
@@ -108,7 +108,7 @@ function providerDefaultBaseUrl(provider: AiProvider) {
 
 function providerDefaultModel(provider: AiProvider) {
   if (provider === 'openai') {
-    return 'gpt-4o-mini';
+    return 'gpt-5.4-mini';
   }
   if (provider === 'gemini') {
     return 'gemini-2.5-flash';
@@ -124,6 +124,16 @@ function providerLabel(provider: AiProvider) {
     return 'Gemini';
   }
   return 'DeepSeek';
+}
+
+function apiKeySourceLabel(source?: AiApiKeySource) {
+  if (source === 'persisted') {
+    return '系统配置';
+  }
+  if (source === 'environment') {
+    return '环境变量';
+  }
+  return '未配置';
 }
 
 function buildProviderDraft(config: AiRuntimeConfig | null, provider: AiProvider): RuntimeProviderDraft {
@@ -160,15 +170,14 @@ function buildRuntimeDraft(config: AiRuntimeConfig | null): RuntimeConfigDraft {
       openai: buildProviderDraft(config, 'openai'),
       gemini: buildProviderDraft(config, 'gemini'),
     },
-    smallProvider: config?.smallRoleProvider || config?.smallModelProfile.provider || config?.provider || 'deepseek',
-    largeProvider: config?.largeRoleProvider || config?.largeModelProfile.provider || config?.provider || 'deepseek',
+    smallProvider: config?.smallRoleProvider || config?.smallModelProfile.provider || config?.provider || 'openai',
+    largeProvider: config?.largeRoleProvider || config?.largeModelProfile.provider || config?.provider || 'openai',
     tavily: {
       baseUrl: config?.tavilyProfile.baseUrl || config?.tavilyBaseUrl || 'https://api.tavily.com',
       apiKey: '',
       topic: config?.tavilyProfile.topic || config?.tavilyTopic || 'general',
       maxResults: config?.tavilyProfile.maxResults || config?.tavilyMaxResults || 5,
     },
-    layeredAgentEnabled: config?.layeredAgentEnabled ?? true,
   };
 }
 
@@ -181,7 +190,11 @@ function buildMemoryDraft(profile: AiMemoryProfileResponse | null): MemoryDraft 
   };
 }
 
-export function ConfigManagement() {
+interface ConfigManagementProps {
+  embedded?: boolean;
+}
+
+export function ConfigManagement({ embedded = false }: ConfigManagementProps = {}) {
   const { confirm, confirmDialog } = useConfirmDialog();
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -360,7 +373,6 @@ export function ConfigManagement() {
         largeBaseUrl: '',
         largeModel: '',
         largeApiKey: '',
-        layeredAgentEnabled: runtimeDraft.layeredAgentEnabled,
       });
       setRuntimeConfig(response.data);
       setRuntimeDraft(buildRuntimeDraft(response.data));
@@ -585,7 +597,7 @@ export function ConfigManagement() {
     if (!runtimeConfig) {
       return '读取中';
     }
-    return `${runtimeConfig.runtime} / layered=${runtimeConfig.layeredAgentEnabled ? 'on' : 'off'} / active=${runtimeConfig.largeRoleProvider}:${runtimeConfig.largeModelProfile.model}`;
+    return `${runtimeConfig.runtime} / active=${runtimeConfig.largeRoleProvider}:${runtimeConfig.largeModelProfile.model}`;
   }, [runtimeConfig]);
 
   const hasDocumentChanges = useMemo(
@@ -594,11 +606,13 @@ export function ConfigManagement() {
   );
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">配置管理</h1>
-        <p className="mt-1 text-sm text-slate-600">统一管理记忆、Small/Large 模型配置与知识文档纳入策略。</p>
-      </div>
+    <div className={embedded ? 'space-y-4' : 'space-y-6'}>
+      {embedded ? null : (
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">配置管理</h1>
+          <p className="mt-1 text-sm text-slate-600">统一管理记忆、Small/Large 模型配置与知识文档纳入策略。</p>
+        </div>
+      )}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
         <Card className="border-slate-200 shadow-sm">
@@ -699,7 +713,8 @@ export function ConfigManagement() {
               </div>
               <div className="mt-2 text-xs text-slate-500">
                 Small: {providerLabel(runtimeDraft.smallProvider)} | Large: {providerLabel(runtimeDraft.largeProvider)} | Tavily:{' '}
-                {runtimeConfig?.tavilyProfile.enabled ? runtimeConfig.tavilyProfile.apiKeyMasked : '未配置'}
+                {runtimeConfig?.tavilyProfile.hasApiKey ? runtimeConfig.tavilyProfile.apiKeyMasked : '未配置'} /{' '}
+                {apiKeySourceLabel(runtimeConfig?.tavilyProfile.apiKeySource)}
               </div>
             </div>
 
@@ -776,8 +791,9 @@ export function ConfigManagement() {
                 <div className="flex items-center justify-between gap-2">
                   <div>
                     <div className="text-sm font-medium text-slate-900">{providerLabel(provider)} Provider 档案</div>
-                    <div className="text-xs text-slate-500">
-                      已保存 Key：{runtimeConfig?.providerProfiles?.[provider]?.hasApiKey ? runtimeConfig?.providerProfiles?.[provider]?.apiKeyMasked : '未配置'}
+                    <div className="space-y-0.5 text-xs text-slate-500">
+                      <div>来源：{apiKeySourceLabel(runtimeConfig?.providerProfiles?.[provider]?.apiKeySource)}</div>
+                      <div>当前有效 Key：{runtimeConfig?.providerProfiles?.[provider]?.hasApiKey ? runtimeConfig?.providerProfiles?.[provider]?.apiKeyMasked : '未配置'}</div>
                     </div>
                   </div>
                   <Button
@@ -824,7 +840,7 @@ export function ConfigManagement() {
                 <Input
                   type="password"
                   value={runtimeDraft.providerProfiles[provider].apiKey}
-                  placeholder={`${providerLabel(provider)} API Key（留空则保留已保存值）`}
+                  placeholder={`${providerLabel(provider)} API Key（留空则保留当前值）`}
                   onChange={(event) =>
                     setRuntimeDraft((value) => ({
                       ...value,
@@ -845,8 +861,9 @@ export function ConfigManagement() {
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <div className="text-sm font-medium text-slate-900">Tavily 联网搜索</div>
-                  <div className="text-xs text-slate-500">
-                    已保存 Key：{runtimeConfig?.tavilyProfile.hasApiKey ? runtimeConfig.tavilyProfile.apiKeyMasked : '未配置'}
+                  <div className="space-y-0.5 text-xs text-slate-500">
+                    <div>来源：{apiKeySourceLabel(runtimeConfig?.tavilyProfile.apiKeySource)}</div>
+                    <div>当前有效 Key：{runtimeConfig?.tavilyProfile.hasApiKey ? runtimeConfig.tavilyProfile.apiKeyMasked : '未配置'}</div>
                   </div>
                 </div>
                 <Button variant="outline" size="sm" disabled={runtimeSaving || runtimeLoading} onClick={() => void handleClearTavilyApiKey()}>
@@ -909,7 +926,7 @@ export function ConfigManagement() {
               <Input
                 type="password"
                 value={runtimeDraft.tavily.apiKey}
-                placeholder="Tavily API Key（留空则保留已保存值）"
+                placeholder="Tavily API Key（留空则保留当前值）"
                 onChange={(event) =>
                   setRuntimeDraft((value) => ({
                     ...value,
@@ -920,29 +937,6 @@ export function ConfigManagement() {
                   }))
                 }
               />
-            </div>
-
-            <div className="rounded-lg border border-slate-200 p-3">
-              <label className="flex cursor-pointer items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-slate-900">启用分层 Agent（AI_LAYERED_AGENT_ENABLED）</div>
-                  <div className="text-xs text-slate-500">
-                    开启后使用 Router/Gate -&gt; Small Context -&gt; Evidence Pack -&gt; Planner/Executor 状态机。
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  checked={runtimeDraft.layeredAgentEnabled}
-                  disabled={runtimeSaving || runtimeLoading}
-                  onChange={(event) =>
-                    setRuntimeDraft((value) => ({
-                      ...value,
-                      layeredAgentEnabled: event.target.checked,
-                    }))
-                  }
-                />
-              </label>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">

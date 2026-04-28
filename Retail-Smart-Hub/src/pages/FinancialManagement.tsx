@@ -71,6 +71,19 @@ function formatDateLabel(value?: string) {
   return value || '-';
 }
 
+function pad2(value: number) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDraftDateTime(date = new Date()) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function buildDraftDocumentNo(prefix: string) {
+  const now = new Date();
+  return `${prefix}-DRAFT-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+}
+
 export function FinancialManagement() {
   const { hasPermission } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -83,6 +96,10 @@ export function FinancialManagement() {
   const [selectedReceivable, setSelectedReceivable] = useState<ReceivableDetailRecord | null>(null);
   const [selectedPayable, setSelectedPayable] = useState<PayableDetailRecord | null>(null);
   const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft>(createReceiptDraft());
+  const [receiptDraftNo, setReceiptDraftNo] = useState('');
+  const [receiptDraftAt, setReceiptDraftAt] = useState('');
+  const [paymentDraftNo, setPaymentDraftNo] = useState('');
+  const [paymentDraftAt, setPaymentDraftAt] = useState('');
   const [previewDocuments, setPreviewDocuments] = useState<DocumentPreviewRecord[]>([]);
   const [previewInitialId, setPreviewInitialId] = useState('');
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -122,6 +139,16 @@ export function FinancialManagement() {
         return matchesSearch && matchesStatus;
       }),
     [payables, searchTerm, statusFilter],
+  );
+
+  const pendingReceivables = useMemo(
+    () => receivables.filter((item) => item.remainingAmount > 0),
+    [receivables],
+  );
+
+  const pendingPayables = useMemo(
+    () => payables.filter((item) => item.remainingAmount > 0),
+    [payables],
   );
 
   const loadFinance = async (options?: { keepReceivableId?: string; keepPayableId?: string }) => {
@@ -195,6 +222,30 @@ export function FinancialManagement() {
     } finally {
       setIsDetailLoading(false);
     }
+  };
+
+  const handleCreateReceipt = async () => {
+    const target = pendingReceivables[0];
+    if (!target) {
+      setPageError('当前没有可收款的应收单。');
+      return;
+    }
+    setReceiptDraftNo(buildDraftDocumentNo('RCT'));
+    setReceiptDraftAt(formatDraftDateTime());
+    setActiveTab('receivables');
+    await handleViewReceivableDetail(target.id);
+  };
+
+  const handleCreatePayment = async () => {
+    const target = pendingPayables[0];
+    if (!target) {
+      setPageError('当前没有可付款的应付单。');
+      return;
+    }
+    setPaymentDraftNo(buildDraftDocumentNo('PAY'));
+    setPaymentDraftAt(formatDraftDateTime());
+    setActiveTab('payables');
+    await handleViewPayableDetail(target.id);
   };
 
   const handleOpenReceivableDocument = async (recordOrId: ReceivableRecord | ReceivableDetailRecord | string) => {
@@ -352,11 +403,8 @@ export function FinancialManagement() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-gray-900">财务管理</h2>
-          <p className="mt-1 text-sm text-gray-500">进入单据工作区后可以直接登记收款、打印应收单和收款单。</p>
-        </div>
-        <div className="flex gap-2">
+        <h2 className="text-2xl font-bold tracking-tight text-gray-900">财务管理</h2>
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
             className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm"
@@ -369,6 +417,14 @@ export function FinancialManagement() {
           <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={handleExportCurrentTab}>
             <History className="mr-2 h-4 w-4" />
             导出当前列表
+          </Button>
+          <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleCreateReceipt()} disabled={!canReceive}>
+            <Wallet className="mr-2 h-4 w-4" />
+            创建收款单
+          </Button>
+          <Button className="bg-slate-800 hover:bg-slate-900" onClick={() => void handleCreatePayment()} disabled={!canPay}>
+            <CreditCard className="mr-2 h-4 w-4" />
+            创建付款单
           </Button>
         </div>
       </div>
@@ -395,6 +451,28 @@ export function FinancialManagement() {
           </CardHeader>
           <CardContent className="space-y-6 pt-6">
             {isDetailLoading ? <div className="text-sm text-gray-500">正在加载账单详情...</div> : null}
+
+            {selectedReceivable ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[11px] leading-5 text-slate-500 shadow-sm">
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  <span className="whitespace-nowrap"><span className="text-slate-500">单号：</span><span className="font-semibold text-slate-900">{receiptDraftNo || 'RCT-DRAFT'}</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">时间：</span><span className="text-slate-700">{receiptDraftAt || formatDraftDateTime()}</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">状态：</span><span className="font-semibold text-slate-900">草稿</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">关联订单：</span><span className="text-slate-700">{selectedReceivable.orderId}</span></span>
+                </div>
+              </div>
+            ) : null}
+
+            {selectedPayable ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[11px] leading-5 text-slate-500 shadow-sm">
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  <span className="whitespace-nowrap"><span className="text-slate-500">单号：</span><span className="font-semibold text-slate-900">{paymentDraftNo || 'PAY-DRAFT'}</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">时间：</span><span className="text-slate-700">{paymentDraftAt || formatDraftDateTime()}</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">状态：</span><span className="font-semibold text-slate-900">草稿</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">关联采购：</span><span className="text-slate-700">{selectedPayable.purchaseOrderId}</span></span>
+                </div>
+              </div>
+            ) : null}
 
             {selectedReceivable ? (
               <div className="space-y-6">

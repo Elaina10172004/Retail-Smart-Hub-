@@ -1,11 +1,18 @@
 ﻿import { appendAuditLog, appendInventoryMovement, db, nextDocumentId } from '../../database/db';
 import { currentDateString } from '../../shared/format';
-import { listWarehouseShelves, suggestShelfForProduct, updateShelfStock } from '../inventory/inventory-shelf.service';
+import {
+  allocateInboundAcrossShelves,
+  allocateOutboundFromShelves,
+  listWarehouseShelves,
+  planInboundShelfAllocations,
+  suggestShelfForProduct,
+} from '../inventory/inventory-shelf.service';
 import { recalculatePurchaseOrderStatus } from '../procurement/procurement-workflow.service';
 
 const STATUS_PENDING_INBOUND = '\u5F85\u5165\u5E93';
 const STATUS_INBOUND_DONE = '\u5DF2\u5165\u5E93';
 const STATUS_RECEIVING_PENDING_INBOUND = '\u5DF2\u9A8C\u6536\u5F85\u5165\u5E93';
+const STATUS_RECEIVING_DONE = '\u5DF2\u5165\u5E93';
 
 export interface InboundRecord {
   id: string;
@@ -20,6 +27,7 @@ export interface InboundDetailRecord extends InboundRecord {
   poId: string;
   warehouseId: string;
   completedAt?: string;
+  sourcePurchaseOrderIds?: string[];
   shelfOptions: InboundShelfOption[];
   itemsDetail: InboundDetailItem[];
 }
@@ -58,6 +66,33 @@ export interface SaveInboundDraftItemPayload {
   shelfId: string;
 }
 
+export interface ManualInboundCandidateItem {
+  supplierId: string;
+  purchaseOrderId: string;
+  purchaseOrderItemId: string;
+  supplier: string;
+  expectedDate: string;
+  procurementStatus: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  orderedQty: number;
+  arrivedQty: number;
+  remainingQty: number;
+  unitCost: number;
+}
+
+export interface CreateManualInboundItemPayload {
+  purchaseOrderId: string;
+  purchaseOrderItemId: string;
+  arrivedQty: number;
+}
+
+export interface CreateManualInboundResult {
+  inboundIds: string[];
+  arrivalIds: string[];
+}
+
 interface InboundRow extends InboundRecord {
   receivingNoteId: string;
   purchaseOrderId: string;
@@ -78,6 +113,17 @@ interface InboundItemRow {
   shelfId: string | null;
   shelfCode: string | null;
   shelfName: string | null;
+}
+
+interface ManualInboundCandidateRow extends ManualInboundCandidateItem {}
+interface ManualInboundSourceRow {
+  inboundId: string;
+  receivingNoteId: string;
+  purchaseOrderId: string;
+  purchaseOrderItemId: string;
+  receivingNoteItemId: string;
+  qualifiedQty: number;
+  inboundQty: number;
 }
 
 const ALLOWED_INBOUND_STATUSES = new Set([STATUS_PENDING_INBOUND, STATUS_INBOUND_DONE]);
@@ -124,6 +170,53 @@ function loadInbound(id: string) {
   `).get(id);
 }
 
+function loadInboundByReceivingNote(receivingNoteId: string) {
+  return db.prepare<InboundRow>(`
+    SELECT
+      io.id,
+      io.receiving_note_id as receivingNoteId,
+      rn.id as rcvId,
+      rn.purchase_order_id as purchaseOrderId,
+      s.name as supplier,
+      io.inbound_qty as items,
+      io.warehouse_id as warehouseId,
+      w.location_code as warehouse,
+      io.status,
+      io.completed_at as completedAt
+    FROM inbound_orders io
+    JOIN receiving_notes rn ON rn.id = io.receiving_note_id
+    JOIN suppliers s ON s.id = rn.supplier_id
+    JOIN warehouses w ON w.id = io.warehouse_id
+    WHERE io.receiving_note_id = ?
+  `).get(receivingNoteId);
+}
+
+function loadManualInboundCandidates() {
+  return db.prepare<ManualInboundCandidateRow>(`
+    SELECT
+      po.supplier_id as supplierId,
+      po.id as purchaseOrderId,
+      poi.id as purchaseOrderItemId,
+      s.name as supplier,
+      po.expected_at as expectedDate,
+      po.status as procurementStatus,
+      p.id as productId,
+      p.sku as sku,
+      p.name as productName,
+      poi.ordered_qty as orderedQty,
+      poi.arrived_qty as arrivedQty,
+      poi.unit_cost as unitCost,
+      CASE WHEN poi.ordered_qty > poi.arrived_qty THEN poi.ordered_qty - poi.arrived_qty ELSE 0 END as remainingQty
+    FROM purchase_order_items poi
+    JOIN purchase_orders po ON po.id = poi.purchase_order_id
+    JOIN suppliers s ON s.id = po.supplier_id
+    JOIN products p ON p.id = poi.product_id
+    WHERE po.status NOT IN ('宸插彇娑?, '宸插畬鎴?)
+      AND poi.ordered_qty > poi.arrived_qty
+    ORDER BY po.expected_at DESC, po.id DESC, poi.id ASC
+  `).all();
+}
+
 function loadInboundItemStocks(receivingNoteId: string) {
   return db.prepare<InboundItemRow>(`
     SELECT
@@ -147,10 +240,167 @@ function loadInboundItemStocks(receivingNoteId: string) {
   `).all(receivingNoteId);
 }
 
+function loadManualInboundCandidatesV2() {
+  return db.prepare<ManualInboundCandidateRow>(`
+    SELECT
+      rn.supplier_id as supplierId,
+      rn.purchase_order_id as purchaseOrderId,
+      poi.id as purchaseOrderItemId,
+      s.name as supplier,
+      po.expected_at as expectedDate,
+      po.status as procurementStatus,
+      p.id as productId,
+      p.sku as sku,
+      p.name as productName,
+      rni.expected_qty as orderedQty,
+      rni.qualified_qty as arrivedQty,
+      poi.unit_cost as unitCost,
+      CASE WHEN rni.qualified_qty > rni.inbound_qty THEN rni.qualified_qty - rni.inbound_qty ELSE 0 END as remainingQty
+    FROM inbound_orders io
+    JOIN receiving_notes rn ON rn.id = io.receiving_note_id
+    JOIN receiving_note_items rni ON rni.receiving_note_id = rn.id
+    JOIN purchase_order_items poi ON poi.id = rni.purchase_order_item_id
+    JOIN purchase_orders po ON po.id = poi.purchase_order_id
+    JOIN suppliers s ON s.id = rn.supplier_id
+    JOIN products p ON p.id = rni.product_id
+    WHERE rn.status = ?
+      AND io.status = ?
+      AND rni.qualified_qty > rni.inbound_qty
+    ORDER BY po.expected_at DESC, rn.purchase_order_id DESC, poi.id ASC
+  `).all(STATUS_RECEIVING_PENDING_INBOUND, STATUS_PENDING_INBOUND);
+}
+
+function loadManualInboundSourcesV2() {
+  return db.prepare<ManualInboundSourceRow>(`
+    SELECT
+      io.id as inboundId,
+      rn.id as receivingNoteId,
+      rn.purchase_order_id as purchaseOrderId,
+      poi.id as purchaseOrderItemId,
+      rni.id as receivingNoteItemId,
+      rni.qualified_qty as qualifiedQty,
+      rni.inbound_qty as inboundQty
+    FROM inbound_orders io
+    JOIN receiving_notes rn ON rn.id = io.receiving_note_id
+    JOIN receiving_note_items rni ON rni.receiving_note_id = rn.id
+    JOIN purchase_order_items poi ON poi.id = rni.purchase_order_item_id
+    WHERE rn.status = ?
+      AND io.status = ?
+      AND rni.qualified_qty > rni.inbound_qty
+  `).all(STATUS_RECEIVING_PENDING_INBOUND, STATUS_PENDING_INBOUND);
+}
+
+function normalizePendingInboundDrafts() {
+  const rows = db.prepare<{
+    inboundId: string;
+    receivingNoteId: string;
+    qualifiedQty: number;
+    inboundQty: number;
+    shelfId: string | null;
+  }>(`
+    SELECT
+      io.id as inboundId,
+      io.receiving_note_id as receivingNoteId,
+      rni.qualified_qty as qualifiedQty,
+      rni.inbound_qty as inboundQty,
+      rni.shelf_id as shelfId
+    FROM inbound_orders io
+    JOIN receiving_notes rn ON rn.id = io.receiving_note_id
+    JOIN receiving_note_items rni ON rni.receiving_note_id = rn.id
+    WHERE io.status = ?
+      AND rn.status = ?
+    ORDER BY io.id ASC, rni.id ASC
+  `).all(STATUS_PENDING_INBOUND, STATUS_RECEIVING_PENDING_INBOUND);
+
+  if (rows.length === 0) {
+    return;
+  }
+
+  const grouped = new Map<string, typeof rows>();
+  rows.forEach((row) => {
+    const current = grouped.get(row.inboundId) ?? [];
+    current.push(row);
+    grouped.set(row.inboundId, current);
+  });
+
+  const resetItem = db.prepare('UPDATE receiving_note_items SET inbound_qty = 0 WHERE receiving_note_id = ?');
+  const resetInbound = db.prepare('UPDATE inbound_orders SET inbound_qty = 0 WHERE id = ?');
+
+  const transaction = db.transaction(() => {
+    grouped.forEach((items, inboundId) => {
+      const hasShelfAssignment = items.some((item) => Boolean(item.shelfId));
+      const hasArtificialFullInbound = items.length > 0 && items.every((item) => item.qualifiedQty > 0 && item.inboundQty >= item.qualifiedQty);
+      if (hasShelfAssignment || !hasArtificialFullInbound) {
+        return;
+      }
+
+      resetItem.run(items[0].receivingNoteId);
+      resetInbound.run(inboundId);
+    });
+  });
+
+  transaction();
+}
+
+function reserveAutoShelf(
+  productId: string,
+  warehouseId: string,
+  requiredQty: number,
+  remainingByWarehouse: Map<string, Map<string, number>>,
+) {
+  if (requiredQty <= 0) {
+    return null;
+  }
+
+  let remainingMap = remainingByWarehouse.get(warehouseId);
+  if (!remainingMap) {
+    remainingMap = new Map(
+      listWarehouseShelves(warehouseId).map((shelf) => [shelf.id, shelf.remainingCapacity]),
+    );
+    remainingByWarehouse.set(warehouseId, remainingMap);
+  }
+
+  const allocations = planInboundShelfAllocations(productId, warehouseId, requiredQty, null, remainingMap);
+  return allocations[0]?.shelfId ?? null;
+}
+
+function reserveInboundShelf(
+  productId: string,
+  warehouseId: string,
+  requiredQty: number,
+  preferredShelfId: string | null | undefined,
+  remainingByWarehouse: Map<string, Map<string, number>>,
+) {
+  if (requiredQty <= 0) {
+    return null;
+  }
+
+  let remainingMap = remainingByWarehouse.get(warehouseId);
+  if (!remainingMap) {
+    remainingMap = new Map(
+      listWarehouseShelves(warehouseId).map((shelf) => [shelf.id, shelf.remainingCapacity]),
+    );
+    remainingByWarehouse.set(warehouseId, remainingMap);
+  }
+
+  const allocations = planInboundShelfAllocations(productId, warehouseId, requiredQty, preferredShelfId, remainingMap);
+  return allocations[0]?.shelfId ?? null;
+}
+
 function normalizeInboundDraftItems(inbound: InboundRow, payloadItems: SaveInboundDraftItemPayload[]) {
   const currentItems = loadInboundItemStocks(inbound.receivingNoteId);
   const itemMap = new Map(currentItems.map((item) => [item.id, item]));
   const shelfMap = new Map(listWarehouseShelves(inbound.warehouseId).map((item) => [item.id, item]));
+  const remainingByWarehouse = new Map<string, Map<string, number>>();
+  const initialRemaining = new Map(
+    listWarehouseShelves(inbound.warehouseId).map((shelf) => [shelf.id, shelf.remainingCapacity]),
+  );
+  currentItems.forEach((item) => {
+    if (item.shelfId && item.inboundQty > 0) {
+      initialRemaining.set(item.shelfId, (initialRemaining.get(item.shelfId) ?? 0) + item.inboundQty);
+    }
+  });
+  remainingByWarehouse.set(inbound.warehouseId, initialRemaining);
 
   if (payloadItems.length !== currentItems.length) {
     throw new Error('Inbound draft item count mismatch');
@@ -170,25 +420,24 @@ function normalizeInboundDraftItems(inbound: InboundRow, payloadItems: SaveInbou
       throw new Error(`Inbound quantity is invalid for ${currentItem.sku}`);
     }
 
-    const shelf = shelfMap.get(payloadItem.shelfId);
-    if (!shelf && payloadItem.inboundQty > 0) {
-      throw new Error(`Shelf is required for ${currentItem.sku}`);
-    }
-
-    if (shelf && payloadItem.inboundQty > 0) {
-      const currentAssignedQty = currentItem.shelfId === shelf.id ? currentItem.inboundQty : 0;
-      const netIncrease = Math.max(payloadItem.inboundQty - currentAssignedQty, 0);
-      if (shelf.remainingCapacity < netIncrease) {
-        throw new Error(`Shelf ${shelf.shelfCode} capacity is insufficient for ${currentItem.sku}`);
-      }
-    }
+    const assignedShelfId =
+      payloadItem.inboundQty > 0
+        ? reserveInboundShelf(
+            currentItem.productId,
+            inbound.warehouseId,
+            payloadItem.inboundQty,
+            payloadItem.shelfId || currentItem.shelfId,
+            remainingByWarehouse,
+          )
+        : null;
+    const shelf = assignedShelfId ? shelfMap.get(assignedShelfId) : undefined;
 
     return {
       ...currentItem,
       qualifiedQty: payloadItem.qualifiedQty,
       defectQty: Math.max(currentItem.arrivedQty - payloadItem.qualifiedQty, 0),
       inboundQty: payloadItem.inboundQty,
-      shelfId: payloadItem.inboundQty > 0 ? payloadItem.shelfId : null,
+      shelfId: assignedShelfId,
       shelfCode: shelf?.shelfCode ?? null,
       shelfName: shelf?.shelfName ?? null,
     };
@@ -227,16 +476,33 @@ function persistInboundDraft(inbound: InboundRow, payloadItems: SaveInboundDraft
 }
 
 export function listInbounds() {
+  normalizePendingInboundDrafts();
   return loadInboundRows();
 }
 
+export function listManualInboundCandidateItems() {
+  normalizePendingInboundDrafts();
+  return loadManualInboundCandidatesV2();
+}
+
 export function getInboundDetail(inboundId: string): InboundDetailRecord | null {
+  normalizePendingInboundDrafts();
   const inbound = loadInbound(inboundId);
   if (!inbound) {
     return null;
   }
 
   const items = loadInboundItemStocks(inbound.receivingNoteId);
+  const sourcePurchaseOrderIds = db
+    .prepare<{ purchaseOrderId: string }>(`
+      SELECT DISTINCT poi.purchase_order_id as purchaseOrderId
+      FROM receiving_note_items rni
+      JOIN purchase_order_items poi ON poi.id = rni.purchase_order_item_id
+      WHERE rni.receiving_note_id = ?
+      ORDER BY poi.purchase_order_id ASC
+    `)
+    .all(inbound.receivingNoteId)
+    .map((item) => item.purchaseOrderId);
   const shelfOptions = listWarehouseShelves(inbound.warehouseId).map((shelf) => ({
     id: shelf.id,
     shelfCode: shelf.shelfCode,
@@ -257,6 +523,7 @@ export function getInboundDetail(inboundId: string): InboundDetailRecord | null 
     warehouse: inbound.warehouse,
     status: inbound.status,
     completedAt: inbound.completedAt ?? undefined,
+    sourcePurchaseOrderIds,
     shelfOptions,
     itemsDetail: items.map((item) => ({
       id: item.id,
@@ -325,12 +592,12 @@ function applyInboundInventoryDelta(
       throw new Error(`Inventory inconsistency for product ${item.productId}: current=${qtyBefore}, delta=${item.inboundQty}`);
     }
 
-    db.prepare('UPDATE inventory SET current_stock = ? WHERE product_id = ? AND warehouse_id = ?').run(
-      qtyAfter,
-      item.productId,
-      warehouseId,
-    );
-    updateShelfStock(item.productId, warehouseId, item.shelfId, direction === 'in' ? item.inboundQty : -item.inboundQty);
+    db.prepare('UPDATE inventory SET current_stock = ? WHERE product_id = ? AND warehouse_id = ?').run(qtyAfter, item.productId, warehouseId);
+    const allocations =
+      direction === 'in'
+        ? allocateInboundAcrossShelves(item.productId, warehouseId, item.inboundQty, item.shelfId)
+        : allocateOutboundFromShelves(item.productId, warehouseId, item.inboundQty);
+    const shelfSummary = allocations.map((allocation) => `${allocation.shelfId}:${allocation.quantity}`).join(', ');
 
     appendInventoryMovement({
       productId: item.productId,
@@ -345,7 +612,7 @@ function applyInboundInventoryDelta(
       reservedBefore: stock.reservedStock,
       reservedAfter: stock.reservedStock,
       occurredAt,
-      remark: `${remarkPrefix} ${receivingNoteId} / ${item.shelfId}`,
+      remark: `${remarkPrefix} ${receivingNoteId} / ${shelfSummary || item.shelfId || 'no-shelf'}`,
     });
   });
 }
@@ -481,5 +748,128 @@ export function deleteInbound(inboundId: string, options?: { aggressive?: boolea
   return {
     id: inboundId,
     deleted: true,
+  };
+}
+
+export function createManualInboundOrders(payloadItems: CreateManualInboundItemPayload[]): CreateManualInboundResult {
+  if (!Array.isArray(payloadItems) || payloadItems.length === 0) {
+    throw new Error('请选择至少一条商品明细。');
+  }
+
+  const availableItems = listManualInboundCandidateItems();
+  const availableMap = new Map(
+    availableItems.map((item) => [`${item.purchaseOrderId}::${item.purchaseOrderItemId}`, item]),
+  );
+  const sourceMap = new Map(
+    loadManualInboundSourcesV2().map((item) => [`${item.purchaseOrderId}::${item.purchaseOrderItemId}`, item]),
+  );
+  const selectedKeys = new Set<string>();
+  const selectedByInbound = new Map<string, string[]>();
+  const availableKeysByInbound = new Map<string, string[]>();
+  const shelfRemainingByWarehouse = new Map<string, Map<string, number>>();
+
+  availableItems.forEach((item) => {
+    const key = `${item.purchaseOrderId}::${item.purchaseOrderItemId}`;
+    const source = sourceMap.get(key);
+    if (!source) {
+      return;
+    }
+    const currentKeys = availableKeysByInbound.get(source.inboundId) ?? [];
+    currentKeys.push(key);
+    availableKeysByInbound.set(source.inboundId, currentKeys);
+  });
+
+  const transaction = db.transaction(() => {
+    payloadItems.forEach((item, index) => {
+      const purchaseOrderId = String(item.purchaseOrderId || '').trim();
+      const purchaseOrderItemId = String(item.purchaseOrderItemId || '').trim();
+      const inboundQty = Number(item.arrivedQty);
+      if (!purchaseOrderId || !purchaseOrderItemId) {
+        throw new Error(`第 ${index + 1} 行缺少采购单号或商品明细。`);
+      }
+      if (!Number.isInteger(inboundQty) || inboundQty <= 0) {
+        throw new Error(`第 ${index + 1} 行入库数量必须为正整数。`);
+      }
+
+      const available = availableMap.get(`${purchaseOrderId}::${purchaseOrderItemId}`);
+      const source = sourceMap.get(`${purchaseOrderId}::${purchaseOrderItemId}`);
+      if (!available || !source) {
+        throw new Error(`采购明细 ${purchaseOrderItemId} 当前不可用于创建入库单。`);
+      }
+      if (inboundQty > available.remainingQty) {
+        throw new Error(`${available.sku} 的本次入库数量不能超过未入库数量 ${available.remainingQty}。`);
+      }
+      if (inboundQty !== available.remainingQty) {
+        throw new Error(`${available.sku} 若需部分入库，请进入下方入库单据页处理；创建入库单仅支持一次性完成当前剩余数量。`);
+      }
+
+      const key = `${purchaseOrderId}::${purchaseOrderItemId}`;
+      selectedKeys.add(key);
+      const currentSelected = selectedByInbound.get(source.inboundId) ?? [];
+      currentSelected.push(key);
+      selectedByInbound.set(source.inboundId, currentSelected);
+    });
+
+    selectedByInbound.forEach((keys, inboundId) => {
+      const allKeys = availableKeysByInbound.get(inboundId) ?? [];
+      const missingKey = allKeys.find((key) => !selectedKeys.has(key));
+      if (missingKey) {
+        throw new Error(`入库单 ${inboundId} 仍有未选择的剩余商品，请整单完成，或进入单据页逐项入库。`);
+      }
+      keys.forEach((key) => {
+        const available = availableMap.get(key);
+        const source = sourceMap.get(key);
+        if (!available || !source) {
+          throw new Error(`采购明细 ${key} 当前不可用于创建入库单。`);
+        }
+        const inbound = loadInbound(source.inboundId);
+        if (!inbound) {
+          throw new Error(`入库单 ${source.inboundId} 不存在。`);
+        }
+        const shelfId = reserveAutoShelf(
+          available.productId,
+          inbound.warehouseId,
+          available.remainingQty,
+          shelfRemainingByWarehouse,
+        );
+        db.prepare('UPDATE receiving_note_items SET inbound_qty = ?, shelf_id = ? WHERE id = ?').run(
+          source.inboundQty + available.remainingQty,
+          shelfId,
+          source.receivingNoteItemId,
+        );
+      });
+    });
+
+    selectedByInbound.forEach((_keys, inboundId) => {
+      const inbound = loadInbound(inboundId);
+      if (!inbound) {
+        throw new Error(`入库单 ${inboundId} 不存在。`);
+      }
+      const totalInboundQty =
+        db
+          .prepare<{ total: number }>('SELECT COALESCE(SUM(inbound_qty), 0) as total FROM receiving_note_items WHERE receiving_note_id = ?')
+          .get(inbound.receivingNoteId)?.total ?? 0;
+      db.prepare('UPDATE inbound_orders SET inbound_qty = ? WHERE id = ?').run(totalInboundQty, inboundId);
+    });
+
+    appendAuditLog('create_manual_inbound_orders', 'inbound_order', Array.from(selectedByInbound.keys()).join(','), {
+      inboundIds: Array.from(selectedByInbound.keys()),
+      arrivalIds: Array.from(selectedByInbound.keys()).map((inboundId) => loadInbound(inboundId)?.receivingNoteId).filter(Boolean),
+      purchaseOrderCount: new Set(payloadItems.map((item) => item.purchaseOrderId)).size,
+      itemCount: payloadItems.length,
+    });
+  });
+
+  transaction();
+
+  const inboundIds = Array.from(selectedByInbound.keys());
+  const confirmedInboundIds = inboundIds.map((inboundId) => confirmInbound(inboundId).id);
+  const arrivalIds = confirmedInboundIds
+    .map((inboundId) => loadInbound(inboundId)?.receivingNoteId)
+    .filter((value): value is string => Boolean(value));
+
+  return {
+    inboundIds: confirmedInboundIds,
+    arrivalIds,
   };
 }

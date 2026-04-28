@@ -1,4 +1,4 @@
-﻿export interface ArrivalRecord {
+export interface ArrivalRecord {
   id: string;
   poId: string;
   supplier: string;
@@ -11,6 +11,7 @@
 
 export interface ArrivalDetailRecord extends ArrivalRecord {
   arrivedAt: string;
+  sourcePurchaseOrderIds?: string[];
   items: Array<{
     id: string;
     sku: string;
@@ -20,4 +21,34 @@ export interface ArrivalDetailRecord extends ArrivalRecord {
     qualifiedQty: number;
     defectQty: number;
   }>;
+}
+
+export interface ManualArrivalCandidateItem {
+  supplierId: string;
+  purchaseOrderId: string;
+  purchaseOrderItemId: string;
+  supplier: string;
+  expectedDate: string;
+  procurementStatus: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  orderedQty: number;
+  arrivedQty: number;
+  remainingQty: number;
+  unitCost: number;
+}
+
+export interface CreateManualArrivalItemPayload {
+  purchaseOrderId: string;
+  purchaseOrderItemId: string;
+  arrivedQty: number;
+}
+
+export interface CreateManualArrivalPayload {
+  items: CreateManualArrivalItemPayload[];
+}
+
+export interface CreateManualArrivalResult {
+  arrivalIds: string[];
 }

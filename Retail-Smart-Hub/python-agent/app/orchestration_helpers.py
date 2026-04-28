@@ -1,29 +1,33 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Sequence
 
-from .common import json_dumps
+from .common import json_dumps, compact_text, parse_json_object_text
 from .models import ChatRequest, ToolCallRecord
+from .prompt_catalog import get_python_prompt_text
 
-DEFAULT_ASSISTANT_SYSTEM_PROMPT = "\n".join(
+DEFAULT_ASSISTANT_SYSTEM_PROMPT = get_python_prompt_text(
+    "default_assistant_system_prompt_lines",
     [
-        "You are Retail Smart Hub AI assistant.",
-        "Use available function tools for real-time data and actions.",
-        "Write tools are controlled and may require approval.",
-        "Never fabricate tool outputs.",
-    ]
+        "你是 Retail Smart Hub 的中文 AI 助手。",
+        "优先使用可用函数工具获取实时数据与执行动作。",
+        "写操作属于受控行为，可能需要审批或确认。",
+        "绝不编造工具结果。",
+    ],
 )
 
-PLANNER_EXECUTOR_SYSTEM_PROMPT = "\n".join(
+PLANNER_EXECUTOR_SYSTEM_PROMPT = get_python_prompt_text(
+    "planner_executor_system_prompt_lines",
     [
-        "You are Planner-Executor-v1 in a layered dual-agent runtime.",
-        "Operate in PLAN -> EXECUTE -> ANSWER phases.",
-        "PLAN may not call tools and must not produce final answer.",
-        "EXECUTE can call tools only when evidence is missing or weak.",
-        "ANSWER must stay grounded in evidence and preserve unresolved gaps.",
-    ]
+        "你运行在分层双代理编排中，当前角色是 Planner-Executor。",
+        "严格遵循 PLAN -> EXECUTE -> ANSWER 三阶段。",
+        "PLAN 阶段不得调用工具，也不得直接产出最终答案。",
+        "EXECUTE 阶段仅在证据不足或证据偏弱时调用工具。",
+        "ANSWER 阶段必须基于证据作答，并保留尚未解决的证据缺口。",
+    ],
 )
 
 
@@ -35,8 +39,10 @@ class ContextBundle:
     citations: List[str]
     knowledge_context: str
     attachment_context: str
+    planner_hints: List[str]
     skill_context: str
     matched_skill_names: List[str]
+    skill_tool_names: List[str]
     tools: List[Dict[str, Any]]
     retrieval_mode: str
 
@@ -48,6 +54,7 @@ class ToolLoopState:
     web_sources: List[Dict[str, Any]] = field(default_factory=list)
     pending_action: Dict[str, Any] | None = None
     approval: Dict[str, Any] | None = None
+    interruption: Dict[str, Any] | None = None
     reasoning_content: str = ""
     reply: str = ""
     resolved_model: str = ""
@@ -213,44 +220,62 @@ def _extract_text_like(value: Any) -> str:
     return ""
 
 
-def _parse_json_object_text(text: Any) -> Dict[str, Any] | None:
-    candidate = str(text or "").strip()
-    if not candidate:
-        return None
-    if candidate.startswith("```"):
-        stripped = candidate.strip("`").strip()
-        if stripped.lower().startswith("json"):
-            stripped = stripped[4:].strip()
-        candidate = stripped
-    try:
-        parsed = json.loads(candidate)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if 0 <= start < end:
-            try:
-                parsed = json.loads(candidate[start : end + 1])
-                return parsed if isinstance(parsed, dict) else None
-            except Exception:
-                return None
-    return None
 
 
 def _unwrap_json_answer(content: str) -> str | None:
-    parsed = _parse_json_object_text(content)
+    parsed = parse_json_object_text(content)
     if not isinstance(parsed, Mapping):
         return None
     mode = str(parsed.get("mode") or "").strip().upper()
     answer = parsed.get("answer")
     if isinstance(answer, str) and answer.strip():
         return answer.strip()
+    conclusion = parsed.get("conclusion")
+    if isinstance(conclusion, str) and conclusion.strip():
+        return conclusion.strip()
     if mode in {"ANSWER", "FINAL", "RESPONSE", "RESULT"}:
-        for key in ("reply", "response", "final_answer", "final", "content", "message"):
+        for key in ("reply", "response", "final_answer", "final", "content", "message", "summary", "conclusion"):
             candidate = parsed.get(key)
             if isinstance(candidate, str) and candidate.strip():
                 return candidate.strip()
+        evidence = parsed.get("evidence")
+        if isinstance(evidence, str) and evidence.strip():
+            return evidence.strip()
     return None
+
+
+def _unwrap_staged_markdown_answer(content: str) -> str | None:
+    text = str(content or "").strip()
+    if not text:
+        return None
+
+    answer_match = re.search(
+        r"(?is)(?:^|\n)\*{0,2}ANSWER\*{0,2}\s*(.*)$",
+        text,
+    )
+    if not answer_match:
+        return None
+
+    answer_body = answer_match.group(1).strip()
+    if not answer_body:
+        return None
+
+    answer_body = re.sub(
+        r"(?is)\nRAG\(v2\).*?$",
+        "",
+        answer_body,
+    ).strip()
+    answer_body = re.sub(
+        r"(?is)\n处理轨迹.*$",
+        "",
+        answer_body,
+    ).strip()
+    answer_body = re.sub(
+        r"(?is)\n引用来源.*$",
+        "",
+        answer_body,
+    ).strip()
+    return answer_body or None
 
 
 def _normalize_tool_arguments(value: Any) -> str:
@@ -302,7 +327,7 @@ def _normalize_synthetic_tool_call(candidate: Mapping[str, Any], index: int) -> 
 
 
 def _extract_synthetic_tool_calls_from_content(content: str) -> List[Dict[str, Any]]:
-    parsed = _parse_json_object_text(content)
+    parsed = parse_json_object_text(content)
     if not isinstance(parsed, Mapping):
         return []
 
@@ -341,6 +366,10 @@ def parse_model_turn(payload: Dict[str, Any]) -> ParsedModelTurn:
         unwrapped = _unwrap_json_answer(content)
         if unwrapped:
             content = unwrapped
+        else:
+            staged_unwrapped = _unwrap_staged_markdown_answer(content)
+            if staged_unwrapped:
+                content = staged_unwrapped
     if not model_tool_calls and content:
         model_tool_calls = _extract_synthetic_tool_calls_from_content(content)
     reasoning = _extract_text_like(message.get("reasoning_content")) or _extract_text_like(message.get("reasoning"))

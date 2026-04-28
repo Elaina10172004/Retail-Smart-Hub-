@@ -15,7 +15,6 @@ const modulePathMap: Record<AppModuleId, string> = {
   finance: '/finance',
   reports: '/reports',
   ai: '/ai',
-  config: '/config',
   settings: '/settings',
 };
 
@@ -37,6 +36,9 @@ export function resolveModuleFromPath(pathname: string) {
 
   if (normalizedPath === '/arrival') {
     return 'inbound';
+  }
+  if (normalizedPath === '/config') {
+    return 'settings';
   }
 
   return (

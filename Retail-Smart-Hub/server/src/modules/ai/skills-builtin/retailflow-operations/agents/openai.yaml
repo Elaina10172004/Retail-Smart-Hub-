@@ -1,0 +1,3 @@
+display_name: RetailFlow Operations
+short_description: 受控业务动作执行
+default_prompt: 按当前字段生成待确认业务动作

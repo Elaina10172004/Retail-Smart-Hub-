@@ -1,4 +1,4 @@
-﻿import { db } from '../../../database/db';
+import { db } from '../../../database/db';
 
 export interface PendingActionRow {
   id: string;

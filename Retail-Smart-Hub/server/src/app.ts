@@ -1,4 +1,4 @@
-﻿import express, { type NextFunction, type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import { env } from './config/env';
 import { apiRouter } from './routes/api';
 import { isApiError } from './shared/api-error';

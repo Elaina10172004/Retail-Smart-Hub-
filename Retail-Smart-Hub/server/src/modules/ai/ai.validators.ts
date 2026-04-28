@@ -1,4 +1,4 @@
-﻿import { z } from 'zod';
+import { z } from 'zod';
 import { parseWithSchema } from '../../shared/validation';
 
 const toolCallStatusSchema = z.enum(['planned', 'disabled', 'completed', 'awaiting_confirmation', 'cancelled', 'reverted']);
@@ -77,6 +77,13 @@ const historyItemSchema = z.object({
 export const aiChatBodySchema = z.object({
   prompt: z.string().optional().default(''),
   conversationId: z.string().optional().default(''),
+  resume: z
+    .object({
+      interruptionId: z.string().trim().min(1),
+      optionId: z.string().trim().min(1),
+      prompt: z.string().trim().optional(),
+    })
+    .optional(),
   attachments: z.array(attachmentSchema).optional().default([]),
   history: z.array(historyItemSchema).optional().default([]),
 });
@@ -144,7 +151,6 @@ export const aiRuntimeConfigPatchSchema = z
     largeApiKey: z.string().max(4096).nullable().optional(),
     largeBaseUrl: urlOrEmptyStringSchema.optional(),
     largeModel: modelOrEmptyStringSchema.optional(),
-    layeredAgentEnabled: z.boolean().optional(),
   })
   .refine((input) => Object.values(input).some((value) => value !== undefined), {
     message: '至少提供一个可更新字段',
@@ -340,6 +346,13 @@ export function parseAiChatBody(body: unknown) {
   return {
     prompt: payload.prompt.trim(),
     conversationId: payload.conversationId.trim(),
+    resume: payload.resume
+      ? {
+          interruptionId: payload.resume.interruptionId.trim(),
+          optionId: payload.resume.optionId.trim(),
+          prompt: payload.resume.prompt?.trim() || undefined,
+        }
+      : undefined,
     attachments,
     history,
   };

@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import { env } from '../../config/env';
 import { resolveWorkspaceRoot } from './workspace-root';

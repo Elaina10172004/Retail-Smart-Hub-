@@ -12,7 +12,7 @@ from app.model_client import (
 
 
 class ModelClientTests(TestCase):
-    def test_normalize_openai_messages_flattens_custom_image_content(self) -> None:
+    def test_normalize_openai_messages_builds_content_blocks_for_images(self) -> None:
         messages = _normalize_openai_messages(
             [
                 {
@@ -32,8 +32,12 @@ class ModelClientTests(TestCase):
         )
 
         self.assertEqual(messages[0]["role"], "user")
-        self.assertIn("Describe this image.", messages[0]["content"])
-        self.assertIn("shelf.png", messages[0]["content"])
+        # Content blocks format: list of {type, text/image_url}
+        self.assertIsInstance(messages[0]["content"], list)
+        self.assertEqual(messages[0]["content"][0]["type"], "text")
+        self.assertEqual(messages[0]["content"][0]["text"], "Describe this image.")
+        self.assertEqual(messages[0]["content"][1]["type"], "image_url")
+        self.assertIn("data:image/png;base64,QUJD", messages[0]["content"][1]["image_url"]["url"])
 
     def test_build_gemini_contents_supports_image_and_function_roundtrip(self) -> None:
         contents, system_instruction = _build_gemini_contents(

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -29,6 +29,7 @@ function getErrorMessage(error: unknown) {
 
 const defaultForm: UpdateCustomerPayload = {
   name: '',
+  customerType: 'reseller',
   channelPreference: '门店补货',
   contactName: '',
   phone: '',
@@ -42,6 +43,7 @@ export function CustomerProfiles() {
   const [customers, setCustomers] = useState<CustomerRecord[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pageError, setPageError] = useState('');
@@ -67,9 +69,10 @@ export function CustomerProfiles() {
         item.contactName.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.phone.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesStatus = !statusFilter || item.status === statusFilter;
-      return matchesSearch && matchesStatus;
+      const matchesType = !typeFilter || item.customerType === typeFilter;
+      return matchesSearch && matchesStatus && matchesType;
     });
-  }, [customers, searchTerm, statusFilter]);
+  }, [customers, searchTerm, statusFilter, typeFilter]);
 
   const resetForm = () => {
     setForm(defaultForm);
@@ -143,6 +146,7 @@ export function CustomerProfiles() {
     setEditingCustomerId(customer.id);
     setForm({
       name: customer.name,
+      customerType: customer.customerType,
       channelPreference: customer.channelPreference,
       contactName: customer.contactName,
       phone: customer.phone,
@@ -320,8 +324,8 @@ export function CustomerProfiles() {
                     <div className="mt-1 text-xs text-gray-500">累计销售 {formatCurrency(selectedCustomer.totalSales)}</div>
                   </div>
                   <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                    <div className="text-xs text-gray-500">档案状态</div>
-                    <div className="mt-1 text-sm font-semibold text-gray-900">{selectedCustomer.status}</div>
+                    <div className="text-xs text-gray-500">分类与状态</div>
+                    <div className="mt-1 text-sm font-semibold text-gray-900">{selectedCustomer.customerType === 'supplier' ? '供应商' : '销售商'} / {selectedCustomer.status}</div>
                     <div className="mt-1 text-xs text-gray-500">最近下单：{selectedCustomer.lastOrderDate}</div>
                   </div>
                 </div>
@@ -342,26 +346,27 @@ export function CustomerProfiles() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-500">活跃客户</CardTitle>
+            <CardTitle className="text-sm font-medium text-gray-500">销售商</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-gray-900">{summary?.resellerCount ?? 0}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-gray-500">供应商</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-gray-900">{summary?.supplierCount ?? 0}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-gray-500">活跃档案</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-gray-900">{summary?.activeCustomerCount ?? 0}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-500">客户累计销售额</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-gray-900">{formatCurrency(summary?.totalSales ?? 0)}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-500">本月活跃客户</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-gray-900">{summary?.thisMonthActiveCount ?? 0}</div>
+            <div className="text-xs text-gray-500 mt-1">本月活跃销售商 {summary?.thisMonthActiveCount ?? 0}</div>
           </CardContent>
         </Card>
       </div>
@@ -388,6 +393,14 @@ export function CustomerProfiles() {
               placeholder="客户名称"
               className="border-gray-300 focus-visible:ring-blue-500"
             />
+            <select
+              value={form.customerType}
+              onChange={(e) => setForm({ ...form, customerType: e.target.value as UpdateCustomerPayload['customerType'] })}
+              className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="reseller">销售商</option>
+              <option value="supplier">供应商</option>
+            </select>
             <select
               value={form.channelPreference}
               onChange={(e) => setForm({ ...form, channelPreference: e.target.value })}
@@ -494,6 +507,15 @@ export function CustomerProfiles() {
                 <option value="active">active</option>
                 <option value="inactive">inactive</option>
               </select>
+              <select
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">所有分类</option>
+                <option value="reseller">销售商</option>
+                <option value="supplier">供应商</option>
+              </select>
             </div>
           </div>
         </CardHeader>
@@ -503,6 +525,7 @@ export function CustomerProfiles() {
               <TableRow className="bg-gray-50/50 hover:bg-gray-50/50">
                 <TableHead className="font-semibold text-gray-900">客户编号</TableHead>
                 <TableHead className="font-semibold text-gray-900">客户名称</TableHead>
+                <TableHead className="font-semibold text-gray-900">分类</TableHead>
                 <TableHead className="font-semibold text-gray-900">联系人</TableHead>
                 <TableHead className="font-semibold text-gray-900">联系电话</TableHead>
                 <TableHead className="font-semibold text-gray-900">偏好渠道</TableHead>
@@ -517,14 +540,14 @@ export function CustomerProfiles() {
             <TableBody>
               {isLoading && (
                 <TableRow>
-                  <TableCell colSpan={11} className="h-24 text-center text-sm text-gray-500">
+                  <TableCell colSpan={12} className="h-24 text-center text-sm text-gray-500">
                     正在加载客户档案...
                   </TableCell>
                 </TableRow>
               )}
               {!isLoading && filteredCustomers.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={11} className="h-24 text-center text-sm text-gray-500">
+                  <TableCell colSpan={12} className="h-24 text-center text-sm text-gray-500">
                     当前筛选条件下没有客户记录。
                   </TableCell>
                 </TableRow>
@@ -534,6 +557,11 @@ export function CustomerProfiles() {
                   <TableRow key={customer.id} className="hover:bg-blue-50/30 transition-colors">
                     <TableCell className="font-medium text-blue-600">{customer.id}</TableCell>
                     <TableCell className="text-gray-900">{customer.name}</TableCell>
+                    <TableCell>
+                      <Badge variant={customer.customerType === 'supplier' ? 'secondary' : 'default'}>
+                        {customer.customerType === 'supplier' ? '供应商' : '销售商'}
+                      </Badge>
+                    </TableCell>
                     <TableCell className="text-gray-600">{customer.contactName || '-'}</TableCell>
                     <TableCell className="text-gray-600">{customer.phone || '-'}</TableCell>
                     <TableCell className="text-gray-600">{customer.channelPreference}</TableCell>

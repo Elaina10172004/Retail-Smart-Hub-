@@ -1,4 +1,4 @@
-﻿import { appendAuditLog, appendInventoryMovement, db } from '../../database/db';
+import { appendAuditLog, appendInventoryMovement, db } from '../../database/db';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
 import { getProductShelfPlacements, getShelfUsageRate, listWarehouseShelves, rebalanceShelfStock } from './inventory-shelf.service';
 export type InventoryStatus = '正常' | '预警' | '缺货';
@@ -138,7 +138,7 @@ function baseInventoryRows() {
       COALESCE(transit.transitStock, 0) as transitStock
     FROM products p
     LEFT JOIN suppliers s ON s.id = p.preferred_supplier_id
-    LEFT JOIN (
+    JOIN (
       SELECT product_id, SUM(current_stock) as currentStock
       FROM inventory
       GROUP BY product_id
@@ -149,7 +149,7 @@ function baseInventoryRows() {
         SUM(CASE WHEN poi.ordered_qty > poi.arrived_qty THEN poi.ordered_qty - poi.arrived_qty ELSE 0 END) as transitStock
       FROM purchase_order_items poi
       JOIN purchase_orders po ON po.id = poi.purchase_order_id
-      WHERE po.status IN ('采购中', '部分到货')
+      WHERE po.status IN ('采购中', '到货', '部分到货')
       GROUP BY product_id
     ) transit ON transit.product_id = p.id
     ORDER BY p.sku
@@ -444,13 +444,14 @@ export function forceDeleteInventory(sku: string, options?: { aggressive?: boole
     throw new Error('Inventory still has stock. Enable aggressive delete to force remove.');
   }
 
-  db.prepare('DELETE FROM inventory WHERE product_id = ?').run(product.id);
   db.prepare('DELETE FROM inventory_shelf_stock WHERE product_id = ?').run(product.id);
+  db.prepare('DELETE FROM inventory WHERE product_id = ?').run(product.id);
   appendAuditLog(aggressive ? 'delete_inventory_force' : 'delete_inventory', 'inventory', product.sku, {
     productId: product.id,
     productName: product.name,
     totalCurrentStock,
     aggressive,
+    effect: 'removed_from_inventory_ledger',
   });
 
   return {

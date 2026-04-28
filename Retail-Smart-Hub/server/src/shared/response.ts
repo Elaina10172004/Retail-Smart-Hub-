@@ -1,4 +1,4 @@
-﻿import type { Response } from 'express';
+import type { Response } from 'express';
 
 export interface ApiEnvelope<T> {
   success: boolean;

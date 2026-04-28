@@ -3,6 +3,7 @@ import { appendAuditLog, db, ensureCustomerProfiles, nextMasterDataId } from '..
 export interface CustomerRecord {
   id: string;
   name: string;
+  customerType: 'reseller' | 'supplier';
   channelPreference: string;
   contactName: string;
   phone: string;
@@ -16,12 +17,15 @@ export interface CustomerRecord {
 export interface CustomerSummary {
   customerCount: number;
   activeCustomerCount: number;
+  resellerCount: number;
+  supplierCount: number;
   totalSales: number;
   thisMonthActiveCount: number;
 }
 
 export interface CreateCustomerPayload {
   name: string;
+  customerType: 'reseller' | 'supplier';
   channelPreference: string;
   contactName?: string;
   phone?: string;
@@ -89,6 +93,7 @@ export function listCustomers() {
     SELECT
       id,
       name,
+      customer_type as customerType,
       COALESCE(channel_preference, '-') as channelPreference,
       COALESCE(contact_name, '') as contactName,
       COALESCE(phone, '') as phone,
@@ -112,6 +117,10 @@ export function getCustomerSummary(): CustomerSummary {
       db.prepare<{ count: number }>("SELECT COUNT(*) as count FROM customers WHERE status <> 'deleted'").get()?.count ?? 0,
     activeCustomerCount:
       db.prepare<{ count: number }>("SELECT COUNT(*) as count FROM customers WHERE status = 'active'").get()?.count ?? 0,
+    resellerCount:
+      db.prepare<{ count: number }>("SELECT COUNT(*) as count FROM customers WHERE status <> 'deleted' AND customer_type = 'reseller'").get()?.count ?? 0,
+    supplierCount:
+      db.prepare<{ count: number }>("SELECT COUNT(*) as count FROM customers WHERE status <> 'deleted' AND customer_type = 'supplier'").get()?.count ?? 0,
     totalSales:
       db.prepare<{ total: number }>("SELECT COALESCE(SUM(total_sales), 0) as total FROM customers WHERE status <> 'deleted'").get()?.total ?? 0,
     thisMonthActiveCount:
@@ -125,6 +134,7 @@ export function createCustomer(payload: CreateCustomerPayload) {
   ensureCustomerProfiles();
 
   const normalizedName = payload.name.trim();
+  const normalizedCustomerType = payload.customerType === 'supplier' ? 'supplier' : 'reseller';
   const normalizedChannel = payload.channelPreference.trim();
   const normalizedContactName = payload.contactName?.trim() || null;
   const normalizedPhone = payload.phone?.trim() || null;
@@ -138,9 +148,9 @@ export function createCustomer(payload: CreateCustomerPayload) {
   if (existing?.status === 'deleted') {
     db.prepare(
       `UPDATE customers
-        SET channel_preference = ?, contact_name = ?, phone = ?, status = ?
+        SET customer_type = ?, channel_preference = ?, contact_name = ?, phone = ?, status = ?
         WHERE id = ?`
-    ).run(normalizedChannel, normalizedContactName, normalizedPhone, 'active', existing.id);
+    ).run(normalizedCustomerType, normalizedChannel, normalizedContactName, normalizedPhone, 'active', existing.id);
 
     appendAuditLog('restore_customer', 'customer', existing.id, {
       channelPreference: normalizedChannel,
@@ -153,9 +163,9 @@ export function createCustomer(payload: CreateCustomerPayload) {
 
   db.prepare(
     `INSERT INTO customers (
-      id, name, channel_preference, contact_name, phone, level, last_order_date, total_orders, total_sales, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(customerId, normalizedName, normalizedChannel, normalizedContactName, normalizedPhone, 'C', null, 0, 0, 'active');
+      id, name, customer_type, channel_preference, contact_name, phone, level, last_order_date, total_orders, total_sales, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(customerId, normalizedName, normalizedCustomerType, normalizedChannel, normalizedContactName, normalizedPhone, 'C', null, 0, 0, 'active');
 
   appendAuditLog('create_customer', 'customer', customerId, {
     channelPreference: normalizedChannel,
@@ -175,6 +185,9 @@ export function importCustomers(rows: ImportSourceRow[]): ImportBatchResult {
   rows.forEach((row, index) => {
     const rowNumber = index + 2;
     const name = normalizeOptionalString(pickImportValue(row, ['客户名称', '客户名', '客户', '名称', 'name', 'customerName', 'customer']));
+    const customerTypeValue = normalizeOptionalString(
+      pickImportValue(row, ['客户类型', '类型', '分类', 'customerType', 'type'])
+    ).toLowerCase();
     const channelPreference = normalizeOptionalString(
       pickImportValue(row, ['渠道偏好', '渠道', 'channelPreference', 'channel'])
     );
@@ -198,6 +211,7 @@ export function importCustomers(rows: ImportSourceRow[]): ImportBatchResult {
     try {
       const customer = createCustomer({
         name,
+        customerType: customerTypeValue === 'supplier' || customerTypeValue === '供应商' ? 'supplier' : 'reseller',
         channelPreference,
         contactName: contactName || undefined,
         phone: phone || undefined,
@@ -247,10 +261,11 @@ export function updateCustomer(id: string, payload: UpdateCustomerPayload) {
 
   db.prepare(
     `UPDATE customers
-      SET name = ?, channel_preference = ?, contact_name = ?, phone = ?
+      SET name = ?, customer_type = ?, channel_preference = ?, contact_name = ?, phone = ?
       WHERE id = ?`
   ).run(
     normalizedName,
+    payload.customerType === 'supplier' ? 'supplier' : 'reseller',
     payload.channelPreference.trim(),
     payload.contactName?.trim() || null,
     payload.phone?.trim() || null,

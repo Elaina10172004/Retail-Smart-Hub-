@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -8,6 +7,9 @@ import { SearchableSelect } from '@/components/ui/searchable-select';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
+import { DocumentSectionCard } from '@/components/documents/DocumentSectionCard';
+import { DocumentRecordTable } from '@/components/documents/DocumentRecordTable';
+import { DocumentWorkspaceShell } from '@/components/documents/DocumentWorkspaceShell';
 import { useAuth } from '@/auth/AuthContext';
 import { buildOrderDocument } from '@/lib/documents';
 import { formatCurrency } from '@/lib/format';
@@ -59,6 +61,19 @@ function productOptionLabel(name: string, sku: string, stock: number) {
   return `${name} / ${sku} / 库存 ${stock}`;
 }
 
+function pad2(value: number) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDraftDateTime(date = new Date()) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function buildDraftDocumentNo(prefix: string) {
+  const now = new Date();
+  return `${prefix}-DRAFT-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+}
+
 export function OrderManagement() {
   const { user, hasPermission } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -79,6 +94,8 @@ export function OrderManagement() {
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
   const [remark, setRemark] = useState('');
   const [items, setItems] = useState<OrderItemDraft[]>([createEmptyItem()]);
+  const [createDraftNo, setCreateDraftNo] = useState('');
+  const [createDraftAt, setCreateDraftAt] = useState('');
   const [formError, setFormError] = useState('');
   const [formSuccess, setFormSuccess] = useState('');
   const [pageError, setPageError] = useState('');
@@ -246,6 +263,21 @@ export function OrderManagement() {
     setStatusFilter('');
     setOrderDateFilter('');
     setCurrentPage(1);
+  };
+
+  const openCreateWorkspace = () => {
+    if (isCreateOpen) {
+      setIsCreateOpen(false);
+      setFormError('');
+      setFormSuccess('');
+      return;
+    }
+
+    setCreateDraftNo(buildDraftDocumentNo('ORD'));
+    setCreateDraftAt(formatDraftDateTime());
+    setIsCreateOpen(true);
+    setFormError('');
+    setFormSuccess('');
   };
 
   const handleReloadOrders = async () => {
@@ -440,226 +472,249 @@ export function OrderManagement() {
     setActionMessage(`已按客户 ${normalizedCustomer} 筛选订单列表。`);
   };
 
-  return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-gray-900">客户订单管理</h2>
-          <p className="mt-1 text-sm text-gray-500">订单列表、真实单据预览和选择式建单已经合并到同一页。</p>
+  const createOrderWorkspace = isCreateOpen ? (
+    <DocumentSectionCard
+      title={
+        <span className="flex items-center gap-2">
+          <PackagePlus className="h-5 w-5 text-blue-600" />
+          新建销售订单表单
+        </span>
+      }
+      actions={
+        <Button variant="ghost" size="sm" onClick={() => { setIsCreateOpen(false); resetForm(); }}>
+          关闭
+        </Button>
+      }
+      bodyClassName="space-y-4 p-4"
+    >
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-gray-700">客户</label>
+            <SearchableSelect
+              value={customerId}
+              onChange={setCustomerId}
+              options={customerOptions}
+              placeholder="请选择客户"
+              searchPlaceholder="输入客户名称或渠道检索"
+              emptyText="没有匹配的客户"
+            />
+            <select
+              value={customerId}
+              onChange={(event) => setCustomerId(event.target.value)}
+              className="hidden"
+              tabIndex={-1}
+              aria-hidden="true"
+            >
+              <option value="">请选择客户</option>
+              {formOptions.customers.map((customer) => (
+                <option key={customer.id} value={customer.id}>
+                  {customer.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-gray-700">订单渠道</label>
+            <div className="flex h-10 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm text-gray-600">
+              {selectedCustomer?.channelPreference || '—'}
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-gray-700">期望交付日期</label>
+            <Input type="date" value={expectedDeliveryDate} onChange={(event) => setExpectedDeliveryDate(event.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-gray-700">备注</label>
+            <Input value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="可填写订单备注" />
+          </div>
         </div>
-        <div className="flex gap-2">
+
+        {canCreateOrders && (formOptions.customers.length === 0 || formOptions.products.length === 0) ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            当前可选客户或商品为空，请先检查基础资料和库存是否已准备完成。
+          </div>
+        ) : null}
+
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-semibold text-gray-900">商品明细</h3>
+            <Button variant="outline" size="sm" className="border-blue-200 text-blue-700 hover:bg-blue-50" onClick={handleAddItem}>
+              <Plus className="mr-2 h-4 w-4" />
+              添加商品行
+            </Button>
+          </div>
+
+          <div className="space-y-2.5">
+            <div className="hidden grid-cols-12 gap-2.5 rounded-lg border border-gray-200 bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-700 md:grid">
+              <div className="md:col-span-5">商品名称</div>
+              <div className="md:col-span-2">SKU 编码</div>
+              <div className="md:col-span-2">数量</div>
+              <div className="md:col-span-2">销售单价</div>
+              <div className="md:col-span-1 text-center">操作</div>
+            </div>
+            {items.map((item) => {
+              const selectedProduct = productMap.get(item.productId) || null;
+
+              return (
+                <div key={item.id} className="grid gap-2.5 rounded-xl border border-gray-200 bg-gray-50/60 p-3 md:grid-cols-12">
+                  <div className="space-y-2 md:col-span-5">
+                    <SearchableSelect
+                      value={item.productId}
+                      onChange={(value) => handleItemChange(item.id, 'productId', value)}
+                      options={getSelectableProducts(item).map((product) => ({
+                        value: product.productId,
+                        label: product.name,
+                        keywords: [product.name, product.sku, product.status, String(product.currentStock)],
+                        description: productOptionLabel(product.name, product.sku, product.currentStock),
+                      }))}
+                      placeholder="请选择库存商品"
+                      searchPlaceholder="输入商品名、SKU 或库存检索"
+                      emptyText="没有匹配的库存商品"
+                    />
+                    <select
+                      value={item.productId}
+                      onChange={(event) => handleItemChange(item.id, 'productId', event.target.value)}
+                      className="hidden"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                    >
+                      <option value="">请选择库存商品</option>
+                      {getSelectableProducts(item).map((product) => (
+                        <option key={product.productId} value={product.productId}>
+                          {productOptionLabel(product.name, product.sku, product.currentStock)}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-xs text-gray-500">{selectedProduct ? `库存 ${selectedProduct.currentStock}` : ''}</div>
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <div className="flex h-10 items-center rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-700">
+                      {selectedProduct?.sku || '自动补全'}
+                    </div>
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Input type="number" min="1" step="1" value={item.quantity} onChange={(event) => handleItemChange(item.id, 'quantity', event.target.value)} placeholder="0" />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Input type="number" min="0" step="0.01" value={item.unitPrice} onChange={(event) => handleItemChange(item.id, 'unitPrice', event.target.value)} placeholder="0.00" />
+                  </div>
+                  <div className="space-y-2 md:col-span-1">
+                    <Button type="button" variant="outline" className="w-full border-red-200 text-red-600 hover:bg-red-50" onClick={() => handleRemoveItem(item.id)} disabled={items.length === 1}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[1fr_280px]">
+          <div />
+          <div className="space-y-2.5 rounded-xl border border-gray-200 bg-gray-50 p-4">
+            <h4 className="font-semibold text-gray-900">提交前检查</h4>
+            <div className="space-y-2 text-sm text-gray-600">
+              <div className="flex items-center justify-between"><span>客户</span><span className="font-medium text-gray-900">{selectedCustomer?.name || '未选择'}</span></div>
+              <div className="flex items-center justify-between"><span>订单渠道</span><span className="font-medium text-gray-900">{selectedCustomer?.channelPreference || '-'}</span></div>
+              <div className="flex items-center justify-between"><span>商品行数</span><span className="font-medium text-gray-900">{items.length}</span></div>
+              <div className="flex items-center justify-between"><span>总数量</span><span className="font-medium text-gray-900">{totalQuantity}</span></div>
+              <div className="flex items-center justify-between"><span>订单金额</span><span className="font-semibold text-blue-700">{formatCurrency(totalAmount || 0)}</span></div>
+              <div className="flex items-start justify-between gap-3"><span>备注</span><span className="text-right font-medium text-gray-900">{remark || '-'}</span></div>
+            </div>
+          </div>
+        </div>
+
+        {formError ? <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{formError}</div> : null}
+
+        <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => { resetForm(); setIsCreateOpen(false); setFormSuccess(''); }}>
+            取消
+          </Button>
+          <Button variant="outline" className="border-blue-200 text-blue-700 hover:bg-blue-50" onClick={resetForm} disabled={isSubmitting}>
+            重置表单
+          </Button>
+          <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleSubmit()} disabled={isSubmitting || !canCreateOrders}>
+            {isSubmitting ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
+            提交订单
+          </Button>
+        </div>
+    </DocumentSectionCard>
+  ) : null;
+
+  return (
+      <DocumentWorkspaceShell
+      title="销售订单"
+      workspaceTitle={isCreateOpen ? '新建订单' : undefined}
+      workspaceHeaderFields={
+        isCreateOpen
+          ? [
+              { label: '单号', value: createDraftNo || 'ORD-DRAFT' },
+              { label: '日期', value: createDraftAt || formatDraftDateTime() },
+              { label: '状态', value: '草稿' },
+              { label: '客户', value: selectedCustomer?.name || '未选择' },
+            ]
+          : undefined
+      }
+      actions={
+        <>
           <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => void handleReloadOrders()} disabled={isLoading}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
             刷新列表
           </Button>
           <Button
             className="bg-blue-600 hover:bg-blue-700 shadow-sm"
-            onClick={() => {
-              setIsCreateOpen((open) => !open);
-              setFormError('');
-              setFormSuccess('');
-            }}
+            onClick={openCreateWorkspace}
             disabled={!canCreateOrders}
             title={!canCreateOrders ? '当前角色没有创建订单权限' : undefined}
           >
             {isCreateOpen ? <X className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
             {isCreateOpen ? '收起表单' : '新建订单'}
           </Button>
-        </div>
-      </div>
-
-      {pageError ? <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">订单列表加载失败：{pageError}</div> : null}
-      {actionMessage ? <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{actionMessage}</div> : null}
+        </>
+      }
+      pageError={pageError ? `订单列表加载失败：${pageError}` : ''}
+      actionMessage={actionMessage}
+      workspace={createOrderWorkspace}
+      workspaceVariant="raw"
+    >
       {formSuccess ? <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{formSuccess}</div> : null}
 
-      {isCreateOpen ? (
-        <Card className="overflow-hidden border-blue-200 shadow-sm">
-          <CardHeader className="border-b border-blue-100 bg-blue-50/60">
-            <CardTitle className="flex items-center gap-2 text-blue-900">
-              <PackagePlus className="h-5 w-5 text-blue-600" />
-              新建销售订单表单
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6 p-6">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">客户</label>
-                <SearchableSelect
-                  value={customerId}
-                  onChange={setCustomerId}
-                  options={customerOptions}
-                  placeholder="请选择客户"
-                  searchPlaceholder="输入客户名称或渠道检索"
-                  emptyText="没有匹配的客户"
-                />
-                <select
-                  value={customerId}
-                  onChange={(event) => setCustomerId(event.target.value)}
-                  className="hidden"
-                  tabIndex={-1}
-                  aria-hidden="true"
-                >
-                  <option value="">请选择客户</option>
-                  {formOptions.customers.map((customer) => (
-                    <option key={customer.id} value={customer.id}>
-                      {customer.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">订单渠道</label>
-                <div className="flex h-10 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm text-gray-600">
-                  {selectedCustomer?.channelPreference || '选择客户后自动带出'}
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">期望交付日期</label>
-                <Input type="date" value={expectedDeliveryDate} onChange={(event) => setExpectedDeliveryDate(event.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">备注</label>
-                <Input value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="可填写订单备注" />
-              </div>
+      <DocumentRecordTable
+        title="订单记录"
+        filters={
+          <>
+            <div className="relative w-full md:w-72">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500" />
+              <Input placeholder="搜索订单编号、客户名称..." className="bg-white border-gray-300 pl-9 focus-visible:ring-blue-500" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
             </div>
-
-            {canCreateOrders && (formOptions.customers.length === 0 || formOptions.products.length === 0) ? (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                当前可选客户或商品为空，请先检查基础资料和库存是否已准备完成。
-              </div>
-            ) : null}
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold text-gray-900">商品明细</h3>
-                <Button variant="outline" size="sm" className="border-blue-200 text-blue-700 hover:bg-blue-50" onClick={handleAddItem}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  添加商品行
-                </Button>
-              </div>
-
-              <div className="space-y-3">
-                {items.map((item) => {
-                  const selectedProduct = productMap.get(item.productId) || null;
-
-                  return (
-                    <div key={item.id} className="grid gap-3 rounded-xl border border-gray-200 bg-gray-50/60 p-4 md:grid-cols-12">
-                      <div className="space-y-2 md:col-span-5">
-                        <label className="text-xs font-medium text-gray-600">商品名称</label>
-                        <SearchableSelect
-                          value={item.productId}
-                          onChange={(value) => handleItemChange(item.id, 'productId', value)}
-                          options={getSelectableProducts(item).map((product) => ({
-                            value: product.productId,
-                            label: product.name,
-                            keywords: [product.name, product.sku, product.status, String(product.currentStock)],
-                            description: productOptionLabel(product.name, product.sku, product.currentStock),
-                          }))}
-                          placeholder="请选择库存商品"
-                          searchPlaceholder="输入商品名、SKU 或库存检索"
-                          emptyText="没有匹配的库存商品"
-                        />
-                        <select
-                          value={item.productId}
-                          onChange={(event) => handleItemChange(item.id, 'productId', event.target.value)}
-                          className="hidden"
-                          tabIndex={-1}
-                          aria-hidden="true"
-                        >
-                          <option value="">请选择库存商品</option>
-                          {getSelectableProducts(item).map((product) => (
-                            <option key={product.productId} value={product.productId}>
-                              {productOptionLabel(product.name, product.sku, product.currentStock)}
-                            </option>
-                          ))}
-                        </select>
-                        <div className="text-xs text-gray-500">
-                          {selectedProduct ? `当前库存 ${selectedProduct.currentStock} · 状态 ${selectedProduct.status}` : '选择商品后自动显示库存状态'}
-                        </div>
-                      </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <label className="text-xs font-medium text-gray-600">SKU 编码</label>
-                        <div className="flex h-10 items-center rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-700">
-                          {selectedProduct?.sku || '自动补全'}
-                        </div>
-                      </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <label className="text-xs font-medium text-gray-600">数量</label>
-                        <Input type="number" min="1" step="1" value={item.quantity} onChange={(event) => handleItemChange(item.id, 'quantity', event.target.value)} placeholder="0" />
-                      </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <label className="text-xs font-medium text-gray-600">销售单价</label>
-                        <Input type="number" min="0" step="0.01" value={item.unitPrice} onChange={(event) => handleItemChange(item.id, 'unitPrice', event.target.value)} placeholder="0.00" />
-                      </div>
-                      <div className="space-y-2 md:col-span-1">
-                        <label className="text-xs font-medium text-gray-600">操作</label>
-                        <Button type="button" variant="outline" className="w-full border-red-200 text-red-600 hover:bg-red-50" onClick={() => handleRemoveItem(item.id)} disabled={items.length === 1}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
-              <div />
-              <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
-                <h4 className="font-semibold text-gray-900">提交前检查</h4>
-                <div className="space-y-2 text-sm text-gray-600">
-                  <div className="flex items-center justify-between"><span>客户</span><span className="font-medium text-gray-900">{selectedCustomer?.name || '未选择'}</span></div>
-                  <div className="flex items-center justify-between"><span>订单渠道</span><span className="font-medium text-gray-900">{selectedCustomer?.channelPreference || '-'}</span></div>
-                  <div className="flex items-center justify-between"><span>商品行数</span><span className="font-medium text-gray-900">{items.length}</span></div>
-                  <div className="flex items-center justify-between"><span>总数量</span><span className="font-medium text-gray-900">{totalQuantity}</span></div>
-                  <div className="flex items-center justify-between"><span>订单金额</span><span className="font-semibold text-blue-700">{formatCurrency(totalAmount || 0)}</span></div>
-                  <div className="flex items-start justify-between gap-3"><span>备注</span><span className="text-right font-medium text-gray-900">{remark || '-'}</span></div>
-                </div>
-              </div>
-            </div>
-
-            {formError ? <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{formError}</div> : null}
-
-            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => { resetForm(); setIsCreateOpen(false); setFormSuccess(''); }}>
-                取消
-              </Button>
-              <Button variant="outline" className="border-blue-200 text-blue-700 hover:bg-blue-50" onClick={resetForm} disabled={isSubmitting}>
-                重置表单
-              </Button>
-              <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleSubmit()} disabled={isSubmitting || !canCreateOrders}>
-                {isSubmitting ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
-                提交订单
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      <Card className="border-gray-200 shadow-sm">
-        <CardHeader className="rounded-t-xl border-b border-gray-100 bg-gray-50/50 pb-3">
-          <div className="flex flex-col items-center justify-between gap-4 md:flex-row">
-            <div className="flex w-full flex-1 flex-wrap gap-4">
-              <div className="relative w-full md:w-72">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500" />
-                <Input placeholder="搜索订单编号、客户名称..." className="bg-white border-gray-300 pl-9 focus-visible:ring-blue-500" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
-              </div>
-              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">所有状态</option>
-                <option value="待发货">待发货</option>
-                <option value="部分发货">部分发货</option>
-                <option value="已发货">已发货</option>
-                <option value="已完成">已完成</option>
-                <option value="已取消">已取消</option>
-              </select>
-              <Input type="date" value={orderDateFilter} onChange={(event) => setOrderDateFilter(event.target.value)} className="w-full md:w-auto bg-white border-gray-300 focus-visible:ring-blue-500" />
-            </div>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">所有状态</option>
+              <option value="待发货">待发货</option>
+              <option value="部分发货">部分发货</option>
+              <option value="已发货">已发货</option>
+              <option value="已完成">已完成</option>
+              <option value="已取消">已取消</option>
+            </select>
+            <Input type="date" value={orderDateFilter} onChange={(event) => setOrderDateFilter(event.target.value)} className="w-full md:w-auto bg-white border-gray-300 focus-visible:ring-blue-500" />
             <Button variant="outline" className="w-full border-gray-300 text-gray-700 hover:bg-gray-50 md:w-auto" onClick={handleResetFilters}>
               重置筛选
             </Button>
+          </>
+        }
+        footer={
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-sm text-gray-500">当前显示第 {currentPage} / {totalPages} 页，共 {filteredOrders.length} 条订单记录</div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" className="border-gray-300 text-gray-700 hover:bg-gray-50" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => Math.max(page - 1, 1))}>
+                上一页
+              </Button>
+              <Button variant="outline" size="sm" className="border-gray-300 text-gray-700 hover:bg-gray-50" disabled={currentPage >= totalPages} onClick={() => setCurrentPage((page) => Math.min(page + 1, totalPages))}>
+                下一页
+              </Button>
+            </div>
           </div>
-        </CardHeader>
-        <CardContent className="p-0">
+        }
+      >
           <Table>
             <TableHeader>
               <TableRow className="bg-gray-50/50 hover:bg-gray-50/50">
@@ -721,22 +776,10 @@ export function OrderManagement() {
               )) : null}
             </TableBody>
           </Table>
-          <div className="flex items-center justify-between rounded-b-xl border-t border-gray-100 bg-gray-50/30 px-6 py-4">
-            <div className="text-sm text-gray-500">当前显示第 {currentPage} / {totalPages} 页，共 {filteredOrders.length} 条订单记录</div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" className="border-gray-300 text-gray-700 hover:bg-gray-50" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => Math.max(page - 1, 1))}>
-                上一页
-              </Button>
-              <Button variant="outline" size="sm" className="border-gray-300 text-gray-700 hover:bg-gray-50" disabled={currentPage >= totalPages} onClick={() => setCurrentPage((page) => Math.min(page + 1, totalPages))}>
-                下一页
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      </DocumentRecordTable>
 
       <DocumentPreviewModal documents={previewDocuments} isOpen={isPreviewOpen} initialActiveId={previewInitialId} onClose={() => setIsPreviewOpen(false)} />
       {confirmDialog}
-    </div>
+    </DocumentWorkspaceShell>
   );
 }

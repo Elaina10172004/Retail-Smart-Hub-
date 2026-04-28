@@ -1,4 +1,4 @@
-﻿import type { Router } from 'express';
+import type { Router } from 'express';
 import { appendAuditLog } from '../../database/db';
 import { isApiError } from '../../shared/api-error';
 import { fail, ok } from '../../shared/response';

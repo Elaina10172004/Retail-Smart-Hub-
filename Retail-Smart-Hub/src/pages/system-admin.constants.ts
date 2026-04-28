@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   CreateProductPayload,
   CreateRolePayload,
   CreateSupplierPayload,
@@ -6,7 +6,7 @@
   CreateWarehousePayload,
 } from '@/types/settings';
 
-export type SectionId = 'account' | 'access' | 'master' | 'logs';
+export type SectionId = 'account' | 'access' | 'master' | 'ai' | 'logs';
 
 export const defaultUserForm: CreateUserPayload = {
   username: '',

@@ -23,6 +23,7 @@ interface ParsedFrontmatter {
   name?: string;
   description?: string;
   triggers?: string[];
+  tools?: string[];
   requires_permissions?: string[];
   requires_env?: string[];
   requires_bins?: string[];
@@ -34,6 +35,7 @@ export interface SkillDefinition {
   name: string;
   description: string;
   triggers: string[];
+  tools: string[];
   requiresPermissions: string[];
   requiresEnv: string[];
   requiresBins: string[];
@@ -42,6 +44,7 @@ export interface SkillDefinition {
   skillPath: string;
   skillFile: string;
   body: string;
+  referenceIndex: string;
   enabled: boolean;
 }
 
@@ -53,6 +56,8 @@ export interface SkillMatch {
   score: number;
   reason: string;
   snippet: string;
+  referenceIndex: string;
+  tools: string[];
 }
 
 export interface SkillMatchResult {
@@ -70,6 +75,8 @@ let cache: SkillCache = {
   signature: '',
   skills: [],
 };
+
+const CORE_SKILL_ID = 'retailflow-analysis';
 
 function getBundledSkillsPath() {
   const candidates = [
@@ -159,7 +166,7 @@ function parseFrontmatter(raw: string) {
       continue;
     }
 
-    if (['triggers', 'requires_permissions', 'requires_env', 'requires_bins'].includes(key)) {
+    if (['triggers', 'tools', 'requires_permissions', 'requires_env', 'requires_bins'].includes(key)) {
       (frontmatter[key as keyof ParsedFrontmatter] as string[] | undefined) = normalizeListValue(value);
       continue;
     }
@@ -213,6 +220,11 @@ function detectSkillSignature() {
       }
       const stats = fs.statSync(skillFile);
       signatures.push(`${root.source}:${subdir}:${stats.mtimeMs}:${stats.size}`);
+      const referenceIndex = path.join(root.rootPath, subdir, 'references', 'index.md');
+      if (fs.existsSync(referenceIndex)) {
+        const referenceStats = fs.statSync(referenceIndex);
+        signatures.push(`${root.source}:${subdir}:ref:${referenceStats.mtimeMs}:${referenceStats.size}`);
+      }
     }
   }
 
@@ -240,6 +252,18 @@ function findExecutable(bin: string) {
   }
 
   return '';
+}
+
+function readReferenceIndex(skillPath: string) {
+  const candidate = path.join(skillPath, 'references', 'index.md');
+  if (!fs.existsSync(candidate)) {
+    return '';
+  }
+  try {
+    return fs.readFileSync(candidate, 'utf8').trim();
+  } catch {
+    return '';
+  }
 }
 
 function loadSkills() {
@@ -274,6 +298,7 @@ function loadSkills() {
         name: parsed.frontmatter.name?.trim() || dir.name,
         description,
         triggers: triggers.map((item) => item.toLowerCase()),
+        tools: (parsed.frontmatter.tools ?? []).map((item) => item.trim()).filter(Boolean),
         requiresPermissions: parsed.frontmatter.requires_permissions ?? [],
         requiresEnv: parsed.frontmatter.requires_env ?? [],
         requiresBins: parsed.frontmatter.requires_bins ?? [],
@@ -282,6 +307,7 @@ function loadSkills() {
         skillPath,
         skillFile,
         body: parsed.body.trim(),
+        referenceIndex: readReferenceIndex(skillPath),
         enabled: resolveBoolean(parsed.frontmatter.enabled, true),
       };
 
@@ -355,12 +381,17 @@ export function matchSkillsForPrompt(input: { prompt: string; permissions: strin
   const limit = Math.max(1, Math.min(8, input.limit ?? 4));
   let disabledSkillCount = 0;
   const matches: SkillMatch[] = [];
+  let coreSkill: SkillDefinition | null = null;
 
   for (const skill of skills) {
     const gating = checkSkillEnabled(skill, input.permissions);
     if (!gating.enabled) {
       disabledSkillCount += 1;
       continue;
+    }
+
+    if (skill.id === CORE_SKILL_ID) {
+      coreSkill = skill;
     }
 
     const matched = scoreSkillMatch(skill, normalizedPrompt);
@@ -375,7 +406,9 @@ export function matchSkillsForPrompt(input: { prompt: string; permissions: strin
       source: skill.source,
       score: matched.score,
       reason: matched.reason,
-      snippet: skill.body.slice(0, 220),
+      snippet: skill.body.slice(0, 1200),
+      referenceIndex: skill.referenceIndex.slice(0, 1000),
+      tools: skill.tools,
     });
   }
 
@@ -386,6 +419,20 @@ export function matchSkillsForPrompt(input: { prompt: string; permissions: strin
     return left.name.localeCompare(right.name);
   });
 
+  if (matches.length === 0 && coreSkill) {
+    matches.push({
+      id: coreSkill.id,
+      name: coreSkill.name,
+      description: coreSkill.description,
+      source: coreSkill.source,
+      score: Math.max(1, normalizedPrompt.length > 0 ? 1 : 0),
+      reason: 'fallback core skill',
+      snippet: coreSkill.body.slice(0, 1200),
+      referenceIndex: coreSkill.referenceIndex.slice(0, 1000),
+      tools: coreSkill.tools,
+    });
+  }
+
   return {
     matchedSkills: matches.slice(0, limit),
     availableSkillCount: skills.length - disabledSkillCount,
@@ -395,16 +442,20 @@ export function matchSkillsForPrompt(input: { prompt: string; permissions: strin
 
 export function buildSkillContext(matches: SkillMatch[]) {
   if (matches.length === 0) {
-    return '当前没有命中可用 skill。';
+    return 'No active skill context.';
   }
 
   return matches
     .map((skill, index) => {
       return [
         `[Skill ${index + 1}] ${skill.name} (${skill.source})`,
-        `说明：${skill.description}`,
-        `触发原因：${skill.reason}`,
-        `摘要：${skill.snippet || '-'}`,
+        `Description: ${skill.description}`,
+        `Reason: ${skill.reason}`,
+        `Recommended tools: ${skill.tools.length > 0 ? skill.tools.join(', ') : 'auto'}`,
+        `Instruction: ${skill.snippet || '-'}`,
+        ...(skill.referenceIndex
+          ? [`Reference index: ${skill.referenceIndex}`]
+          : []),
       ].join('\n');
     })
     .join('\n\n');

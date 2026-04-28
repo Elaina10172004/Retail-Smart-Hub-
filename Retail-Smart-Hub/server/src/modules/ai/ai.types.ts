@@ -1,4 +1,4 @@
-import type { AiDocumentAttachment } from './import.service';
+import type { AiDocumentAttachment } from './attachment-context.service';
 import type { AiApproval, AiPendingAction, AiToolCallRecord } from './dto/tool.dto';
 
 export interface AiStatusPayload {
@@ -22,6 +22,11 @@ export interface AiWebSource {
 export interface AiChatRequest {
   prompt: string;
   conversationId?: string;
+  resume?: {
+    interruptionId: string;
+    optionId: string;
+    prompt?: string;
+  };
   userId: string;
   tenantId?: string;
   username: string;
@@ -37,6 +42,22 @@ export interface AiChatRequest {
     pendingActionName?: string;
     pendingActionStatus?: AiPendingAction['status'];
   }>;
+}
+
+export interface AiInterruptionOption {
+  id: string;
+  label: string;
+  prompt: string;
+  description?: string;
+}
+
+export interface AiInterruption {
+  id: string;
+  kind: 'clarification';
+  status: 'awaiting_user';
+  title: string;
+  message: string;
+  options: AiInterruptionOption[];
 }
 
 export interface AiChatResponse {
@@ -58,6 +79,7 @@ export interface AiChatResponse {
   };
   pendingAction?: AiPendingAction;
   approval?: AiApproval;
+  interruption?: AiInterruption;
   reasoningContent?: string;
   configured: boolean;
   provider: string;
@@ -73,6 +95,7 @@ export interface AiChatStreamMeta {
   answer_meta?: AiChatResponse['answer_meta'];
   pendingAction?: AiPendingAction;
   approval?: AiApproval;
+  interruption?: AiInterruption;
   configured: boolean;
   provider: string;
   model: string;

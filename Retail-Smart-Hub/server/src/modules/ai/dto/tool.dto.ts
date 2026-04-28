@@ -1,4 +1,4 @@
-﻿export type AiToolCallStatus = 'planned' | 'disabled' | 'completed' | 'awaiting_confirmation' | 'cancelled' | 'reverted';
+export type AiToolCallStatus = 'planned' | 'disabled' | 'completed' | 'awaiting_confirmation' | 'cancelled' | 'reverted';
 
 export type ReadOnlyToolName =
   | 'get_dashboard_overview'

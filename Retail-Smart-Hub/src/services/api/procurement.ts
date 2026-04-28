@@ -1,13 +1,15 @@
-﻿import { apiClient } from '@/services/api/client';
+import { apiClient } from '@/services/api/client';
 import type { ApiEnvelope } from '@/types/api';
 import type {
   CreateProcurementOrderPayload,
   DeleteProcurementOrderResponse,
   GeneratedPurchaseOrder,
+  ProcurementArrivalWorkspaceRecord,
   ProcurementFormOptions,
   ProcurementOrder,
   ProcurementOrderDetail,
   ProcurementSuggestionSummary,
+  RegisterProcurementArrivalPayload,
   UpdateProcurementStatusPayload,
 } from '@/types/procurement';
 
@@ -17,6 +19,10 @@ export function fetchProcurementOrders() {
 
 export function fetchProcurementOrderDetail(id: string) {
   return apiClient.get<ApiEnvelope<ProcurementOrderDetail>>(`/procurement/${id}`);
+}
+
+export function fetchProcurementArrivalWorkspace(id: string) {
+  return apiClient.get<ApiEnvelope<ProcurementArrivalWorkspaceRecord>>(`/procurement/${id}/arrival-workspace`);
 }
 
 export function fetchProcurementSuggestions() {
@@ -33,6 +39,10 @@ export function generateSuggestedPurchaseOrders() {
 
 export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
   return apiClient.post<ApiEnvelope<ProcurementOrderDetail>>('/procurement', payload);
+}
+
+export function registerProcurementArrival(id: string, payload: RegisterProcurementArrivalPayload) {
+  return apiClient.post<ApiEnvelope<ProcurementArrivalWorkspaceRecord>>(`/procurement/${id}/arrival`, payload);
 }
 
 export function updateProcurementStatus(id: string, payload: UpdateProcurementStatusPayload) {

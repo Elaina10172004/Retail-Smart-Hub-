@@ -5,7 +5,7 @@ import { AuthenticatedUser, getSession } from '../../shared/auth';
 import { parseWithSchema } from '../../shared/validation';
 import { buildModelToolDefinitions, executeRuntimeToolCall } from './tool-runtime.service';
 import { buildSkillContext, matchSkillsForPrompt } from './skill.service';
-import { buildAttachmentContext, processDocumentSkill } from './import.service';
+import { buildAttachmentContext } from './attachment-context.service';
 import { captureConversationMemory, deleteConversationMemoryFact, listConversationMemoryFacts } from './rag.service';
 import { getProfileMemory, getProfileMemoryByScope, upsertProfileMemory } from './profile-memory.service';
 import {
@@ -21,37 +21,53 @@ const toolSchemaRequestSchema = z.object({
   token: z.string().optional().default(''),
 });
 
+const INTERNAL_TOOL_CALL_STATUSES = new Set([
+  'planned',
+  'disabled',
+  'completed',
+  'awaiting_confirmation',
+  'cancelled',
+  'reverted',
+]);
+
+const INTERNAL_PENDING_ACTION_STATUSES = new Set([
+  'pending',
+  'confirmed',
+  'cancelled',
+  'undone',
+  'expired',
+]);
+
+const permissiveHistoryItemSchema = z.object({
+  role: z.string().trim().optional().default('user'),
+  content: z.string().optional().default(''),
+  toolCalls: z
+    .array(
+      z.object({
+        name: z.string().optional().default(''),
+        status: z.string().optional().default(''),
+        summary: z.string().optional().default(''),
+      }),
+    )
+    .optional()
+    .default([]),
+  pendingActionId: z.string().optional(),
+  pendingActionName: z.string().optional(),
+  pendingActionStatus: z.string().optional(),
+});
+
 const toolExecuteRequestSchema = z.object({
   toolName: z.string().trim().min(1),
-  rawArguments: z.string().optional(),
+  rawArguments: z.union([z.string(), z.record(z.string(), z.unknown()), z.array(z.unknown())]).optional(),
   request: z.object({
-    prompt: z.string().trim().max(4000).optional().default(''),
-    userId: z.string().trim().min(1),
+    prompt: z.string().trim().max(20_000).optional().default(''),
+    userId: z.string().trim().optional().default(''),
     tenantId: z.string().trim().optional(),
     sessionId: z.string().trim().optional(),
-    username: z.string().trim().min(1),
+    username: z.string().trim().optional().default(''),
     permissions: z.array(z.string()).optional().default([]),
     token: z.string().optional().default(''),
-    history: z
-      .array(
-        z.object({
-          role: z.enum(['user', 'assistant']),
-          content: z.string().trim().min(1),
-          toolCalls: z
-            .array(
-              z.object({
-                name: z.string().trim().min(1),
-                status: z.enum(['planned', 'disabled', 'completed', 'awaiting_confirmation', 'cancelled', 'reverted']),
-                summary: z.string().trim().min(1),
-              }),
-            )
-            .optional(),
-          pendingActionId: z.string().trim().optional(),
-          pendingActionName: z.string().trim().optional(),
-          pendingActionStatus: z.enum(['pending', 'confirmed', 'cancelled', 'undone', 'expired']).optional(),
-        }),
-      )
-      .optional(),
+    history: z.array(permissiveHistoryItemSchema).optional().default([]),
   }),
 });
 
@@ -86,7 +102,7 @@ const attachmentLocatorSchema = z
 const documentAttachmentSchema = z.object({
   id: z.string().trim().optional(),
   fileName: z.string().trim().min(1),
-  target: z.enum(['auto', 'customer', 'product', 'order']).optional().default('auto'),
+  target: z.enum(['auto', 'customer', 'product', 'order', 'procurement']).optional().default('auto'),
   kind: attachmentKindSchema.optional(),
   mimeType: z.string().trim().max(200).optional(),
   imageDataUrl: z.string().max(8_000_000).optional(),
@@ -121,12 +137,6 @@ const documentAttachmentSchema = z.object({
     .default([]),
 });
 
-const documentHandleRequestSchema = z.object({
-  prompt: z.string().optional().default(''),
-  attachments: z.array(documentAttachmentSchema).optional().default([]),
-  token: z.string().optional().default(''),
-});
-
 const documentContextRequestSchema = z.object({
   prompt: z.string().optional().default(''),
   attachments: z.array(documentAttachmentSchema).optional().default([]),
@@ -142,12 +152,91 @@ const memoryProfilePatchRequestSchema = z.object({
 });
 
 const memoryCaptureRequestSchema = z.object({
-  prompt: z.string().trim().min(1),
-  reply: z.string().trim().min(1),
+  prompt: z.string().trim().max(20_000).optional().default(''),
+  reply: z.string().trim().max(40_000).optional().default(''),
   token: z.string().optional().default(''),
   sessionId: z.string().trim().optional(),
   citations: z.array(z.string()).optional().default([]),
 });
+
+function normalizeRawArguments(value: unknown) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value === undefined) {
+    return '';
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value ?? '');
+  }
+}
+
+function normalizeToolExecutionHistory(payload: z.infer<typeof toolExecuteRequestSchema>['request']['history']) {
+  if (!Array.isArray(payload) || payload.length === 0) {
+    return undefined;
+  }
+
+  const normalized: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    toolCalls?: Array<{
+      name: string;
+      status: 'planned' | 'disabled' | 'completed' | 'awaiting_confirmation' | 'cancelled' | 'reverted';
+      summary: string;
+    }>;
+    pendingActionId?: string;
+    pendingActionName?: string;
+    pendingActionStatus?: 'pending' | 'confirmed' | 'cancelled' | 'undone' | 'expired';
+  }> = payload
+    .map((item) => {
+      const role: 'user' | 'assistant' = item.role === 'assistant' ? 'assistant' : 'user';
+      const content = String(item.content || '').trim();
+      if (!content) {
+        return null;
+      }
+
+      const toolCalls = Array.isArray(item.toolCalls)
+        ? item.toolCalls
+            .map((toolCall) => {
+              const name = String(toolCall.name || '').trim();
+              const status = String(toolCall.status || '').trim();
+              const summary = String(toolCall.summary || '').trim();
+              if (!name || !summary || !INTERNAL_TOOL_CALL_STATUSES.has(status)) {
+                return null;
+              }
+              return {
+                name,
+                status: status as
+                  | 'planned'
+                  | 'disabled'
+                  | 'completed'
+                  | 'awaiting_confirmation'
+                  | 'cancelled'
+                  | 'reverted',
+                summary,
+              };
+            })
+            .filter(Boolean)
+        : [];
+
+      const pendingActionStatus = String(item.pendingActionStatus || '').trim();
+      return {
+        role,
+        content,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        pendingActionId: item.pendingActionId?.trim() || undefined,
+        pendingActionName: item.pendingActionName?.trim() || undefined,
+        pendingActionStatus: INTERNAL_PENDING_ACTION_STATUSES.has(pendingActionStatus)
+          ? (pendingActionStatus as 'pending' | 'confirmed' | 'cancelled' | 'undone' | 'expired')
+          : undefined,
+      };
+    })
+    .filter(Boolean);
+
+  return normalized.length > 0 ? normalized : undefined;
+}
 
 function isLocalIp(rawIp: string | undefined) {
   if (!rawIp) {
@@ -254,7 +343,7 @@ agentInternalRouter.post('/tools/execute', (req, res) => {
     return rejectMissingSession(res);
   }
 
-  const execution = executeRuntimeToolCall(payload.toolName, payload.rawArguments, {
+  const execution = executeRuntimeToolCall(payload.toolName, normalizeRawArguments(payload.rawArguments), {
     prompt: payload.request.prompt,
     userId: session.user.id,
     tenantId: resolveTenantId(session.user.department),
@@ -262,7 +351,7 @@ agentInternalRouter.post('/tools/execute', (req, res) => {
     username: session.user.username,
     permissions: session.user.permissions,
     token: session.token,
-    history: payload.request.history,
+    history: normalizeToolExecutionHistory(payload.request.history),
   });
 
   return res.json({
@@ -290,26 +379,6 @@ agentInternalRouter.post('/skills/match', (req, res) => {
     availableSkillCount: matched.availableSkillCount,
     disabledSkillCount: matched.disabledSkillCount,
     context,
-  });
-});
-
-agentInternalRouter.post('/document/handle', (req, res) => {
-  const payload = parseWithSchema(documentHandleRequestSchema, req.body, 'internal-agent-document-handle');
-  const session = resolveInternalSession(payload.token || '');
-  if (!session) {
-    return rejectMissingSession(res);
-  }
-  const result = processDocumentSkill({
-    prompt: payload.prompt,
-    attachments: payload.attachments,
-    userId: session.user.id,
-    username: session.user.username,
-    permissions: session.user.permissions,
-  });
-
-  return res.json({
-    ok: true,
-    result,
   });
 });
 
@@ -563,6 +632,15 @@ agentInternalRouter.post('/memory/capture', (req, res) => {
   const session = resolveInternalSession(payload.token || '');
   if (!session) {
     return rejectMissingSession(res);
+  }
+  if (!payload.prompt || !payload.reply) {
+    return res.json({
+      ok: true,
+      result: {
+        captured: false,
+        reason: 'empty_prompt_or_reply',
+      },
+    });
   }
   const result = captureConversationMemory({
     prompt: payload.prompt,

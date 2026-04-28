@@ -93,7 +93,8 @@ export function getDashboardOverview(): DashboardOverview {
       `SELECT COALESCE(SUM(total_amount), 0) as total FROM sales_orders WHERE substr(order_date, 1, 7) = ? AND status <> '已取消'`
     ).get(currentMonth)?.total ?? 0;
 
-  const alerts = getInventoryAlerts().slice(0, 3).map((item) => ({
+  const allAlerts = getInventoryAlerts();
+  const alerts = allAlerts.slice(0, 3).map((item) => ({
     id: item.sku,
     name: item.name,
     stock: item.currentStock,
@@ -101,8 +102,8 @@ export function getDashboardOverview(): DashboardOverview {
     status: item.status,
   }));
 
-  const pendingProcurements = listProcurementOrders()
-    .filter((item) => item.status !== '已完成')
+  const allPendingProcurements = listProcurementOrders().filter((item) => item.status !== '已完成');
+  const pendingProcurements = allPendingProcurements
     .slice(0, 3)
     .map((item) => ({
       id: item.id,
@@ -111,8 +112,8 @@ export function getDashboardOverview(): DashboardOverview {
       date: item.createDate,
     }));
 
-  const pendingShipments = listShipments()
-    .filter((item) => item.status === '待发货')
+  const allPendingShipments = listShipments().filter((item) => item.status === '待发货');
+  const pendingShipments = allPendingShipments
     .slice(0, 3)
     .map((item) => ({
       id: item.id,
@@ -125,10 +126,10 @@ export function getDashboardOverview(): DashboardOverview {
     stats: {
       todayOrderCount,
       inventoryUnits,
-      lowStockCount: alerts.length,
+      lowStockCount: allAlerts.length,
       monthlySales,
-      pendingShipmentCount: pendingShipments.length,
-      pendingProcurementCount: pendingProcurements.length,
+      pendingShipmentCount: allPendingShipments.length,
+      pendingProcurementCount: allPendingProcurements.length,
       pendingReceivable: financeOverview.totalReceivable,
     },
     salesTrend: getRecentSalesTrend(),

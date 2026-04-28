@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -15,11 +15,13 @@ import { Bot, Eye, Filter, LoaderCircle, PackagePlus, Plus, RefreshCw, Search, S
 import {
   createProcurementOrder,
   deleteProcurementOrder,
+  fetchProcurementArrivalWorkspace,
   fetchProcurementFormOptions,
   fetchProcurementOrderDetail,
   fetchProcurementOrders,
   fetchProcurementSuggestions,
   generateSuggestedPurchaseOrders,
+  registerProcurementArrival,
   updateProcurementStatus,
 } from '@/services/api/procurement';
 import type { DocumentPreviewRecord } from '@/types/documents';
@@ -45,6 +47,7 @@ interface ProcurementNewProductDraft {
 interface ProcurementItemDraft {
   id: string;
   mode: ProcurementDraftMode;
+  supplierId: string;
   productId: string;
   quantity: string;
   unitCost: string;
@@ -73,6 +76,19 @@ function deriveExpectedDate(leadTimeDays = 0) {
   return date.toISOString().slice(0, 10);
 }
 
+function pad2(value: number) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDraftDateTime(date = new Date()) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function buildDraftDocumentNo(prefix: string) {
+  const now = new Date();
+  return `${prefix}-DRAFT-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+}
+
 function createDefaultNewProductDraft(): ProcurementNewProductDraft {
   return {
     name: '',
@@ -84,10 +100,11 @@ function createDefaultNewProductDraft(): ProcurementNewProductDraft {
   };
 }
 
-function createEmptyItem(mode: ProcurementDraftMode = 'existing', seed = Date.now()): ProcurementItemDraft {
+function createEmptyItem(mode: ProcurementDraftMode = 'existing', seed = Date.now(), supplierId = ''): ProcurementItemDraft {
   return {
     id: `procurement-item-${seed}`,
     mode,
+    supplierId,
     productId: '',
     quantity: '',
     unitCost: '',
@@ -97,6 +114,16 @@ function createEmptyItem(mode: ProcurementDraftMode = 'existing', seed = Date.no
 
 function renderProductLabel(product: ProcurementFormProductOption) {
   return `${product.sku} / ${product.name}`;
+}
+
+function getNextProcurementAction(order: ProcurementOrder) {
+  if (order.status === '待审核') {
+    return { label: '推进到采购中', targetStatus: '采购中' as const };
+  }
+  if (order.status === '采购中') {
+    return { label: '推进到到货', targetStatus: '到货' as const };
+  }
+  return null;
 }
 
 export function ProcurementManagement() {
@@ -119,6 +146,8 @@ export function ProcurementManagement() {
   const [expectedDate, setExpectedDate] = useState('');
   const [remark, setRemark] = useState('');
   const [draftItems, setDraftItems] = useState<ProcurementItemDraft[]>([createEmptyItem()]);
+  const [createDraftNo, setCreateDraftNo] = useState('');
+  const [createDraftAt, setCreateDraftAt] = useState('');
   const [previewDocuments, setPreviewDocuments] = useState<DocumentPreviewRecord[]>([]);
   const [previewInitialId, setPreviewInitialId] = useState('');
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -154,7 +183,12 @@ export function ProcurementManagement() {
       })),
     [formOptions.suppliers],
   );
-  const supplierProducts = useMemo(
+  const supplierMap = useMemo(
+    () => new Map(formOptions.suppliers.map((supplier) => [supplier.id, supplier])),
+    [formOptions.suppliers],
+  );
+  const supplierProducts = useMemo(() => formOptions.products, [formOptions.products]);
+  const currentSupplierProducts = useMemo(
     () => formOptions.products.filter((item) => item.preferredSupplierId === supplierId),
     [formOptions.products, supplierId],
   );
@@ -162,6 +196,26 @@ export function ProcurementManagement() {
     () => new Map(formOptions.products.map((product) => [product.id, product])),
     [formOptions.products],
   );
+  const draftSupplierLabel = useMemo(() => {
+    const resolvedSupplierIds = new Set<string>();
+    draftItems.forEach((item) => {
+      const resolvedSupplierId = item.supplierId || supplierId;
+      if (resolvedSupplierId) {
+        resolvedSupplierIds.add(resolvedSupplierId);
+      }
+    });
+
+    if (resolvedSupplierIds.size > 1) {
+      return '多供应商';
+    }
+
+    if (resolvedSupplierIds.size === 1) {
+      const resolvedSupplierId = Array.from(resolvedSupplierIds)[0];
+      return supplierMap.get(resolvedSupplierId)?.name || selectedSupplier?.name || '多供应商';
+    }
+
+    return selectedSupplier?.name || '多供应商';
+  }, [draftItems, selectedSupplier?.name, supplierId, supplierMap]);
   const totalDraftAmount = useMemo(
     () => draftItems.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unitCost || 0), 0),
     [draftItems],
@@ -217,7 +271,9 @@ export function ProcurementManagement() {
     setSupplierId(fallbackSupplierId);
     setExpectedDate(deriveExpectedDate(fallbackSupplier?.leadTimeDays ?? 0));
     setRemark('');
-    setDraftItems([createEmptyItem('existing', Date.now())]);
+    setDraftItems([createEmptyItem('existing', Date.now(), fallbackSupplierId)]);
+    setCreateDraftNo(buildDraftDocumentNo('PO'));
+    setCreateDraftAt(formatDraftDateTime());
     setFormError('');
   };
 
@@ -228,9 +284,12 @@ export function ProcurementManagement() {
       return;
     }
 
-    if (!supplierId && formOptions.suppliers.length > 0) {
-      resetCreateForm(formOptions.suppliers[0]?.id);
+    if ((!supplierId || !draftItems[0]?.supplierId) && formOptions.suppliers.length > 0) {
+      resetCreateForm(supplierId || formOptions.suppliers[0]?.id);
     }
+
+    setCreateDraftNo(buildDraftDocumentNo('PO'));
+    setCreateDraftAt(formatDraftDateTime());
 
     setFormError('');
     setIsCreateOpen(true);
@@ -358,13 +417,73 @@ export function ProcurementManagement() {
   const handleSupplierChange = (nextSupplierId: string) => {
     const supplier = formOptions.suppliers.find((item) => item.id === nextSupplierId) || null;
     setSupplierId(nextSupplierId);
-    setExpectedDate(deriveExpectedDate(supplier?.leadTimeDays ?? 0));
-    setDraftItems([createEmptyItem('existing', Date.now())]);
+    setExpectedDate((current) => {
+      const hasDraftContent = draftItems.some(
+        (item) => item.productId || item.quantity || item.unitCost || item.newProduct.name.trim() || item.newProduct.sku.trim(),
+      );
+      if (current && hasDraftContent) {
+        return current;
+      }
+      return deriveExpectedDate(supplier?.leadTimeDays ?? 0);
+    });
     setFormError('');
   };
 
+  const handleAdvanceProcurementStatus = async (order: ProcurementOrder) => {
+    if (!canManageProcurement) {
+      setPageError('当前角色没有采购写入权限。');
+      return;
+    }
+
+    const nextAction = getNextProcurementAction(order);
+    if (!nextAction) {
+      setPageError(`采购单 ${order.id} 当前状态无需继续推进。`);
+      return;
+    }
+
+    setIsGenerating(true);
+    setPageError('');
+    setActionMessage('');
+
+    try {
+      if (nextAction.targetStatus === '采购中') {
+        if (!(await confirm(`确认将采购单 ${order.id} 从“待审核”推进到“采购中”？`))) {
+          setIsGenerating(false);
+          return;
+        }
+        const response = await updateProcurementStatus(order.id, { status: '采购中' });
+        setActionMessage(response.message || `采购单 ${order.id} 已推进到采购中。`);
+      } else {
+        const workspaceResponse = await fetchProcurementArrivalWorkspace(order.id);
+        const remainingItems = workspaceResponse.data.items
+          .filter((item) => item.remainingQty > 0)
+          .map((item) => ({ itemId: item.itemId, arrivedQty: item.remainingQty }));
+
+        if (remainingItems.length === 0) {
+          setActionMessage(`采购单 ${order.id} 当前没有可登记到货的剩余商品。`);
+          await loadProcurement();
+          return;
+        }
+
+        if (!(await confirm(`确认将采购单 ${order.id} 推进到“到货”？\n系统会按当前剩余数量一次性登记到货，并进入验收入库流程。`))) {
+          setIsGenerating(false);
+          return;
+        }
+
+        const response = await registerProcurementArrival(order.id, { items: remainingItems });
+        setActionMessage(response.message || `采购单 ${order.id} 已到货，已进入验收入库流程。`);
+      }
+
+      await loadProcurement();
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const handleAddItem = (mode: ProcurementDraftMode = 'existing') => {
-    setDraftItems((current) => [...current, createEmptyItem(mode, Date.now() + current.length)]);
+    setDraftItems((current) => [...current, createEmptyItem(mode, Date.now() + current.length, supplierId)]);
   };
 
   const handleRemoveItem = (id: string) => {
@@ -373,7 +492,33 @@ export function ProcurementManagement() {
 
   const handleModeChange = (id: string, mode: ProcurementDraftMode) => {
     setDraftItems((current) =>
-      current.map((item) => (item.id === id ? { ...item, mode, productId: '', unitCost: '', newProduct: createDefaultNewProductDraft() } : item)),
+      current.map((item) =>
+        item.id === id ? { ...item, mode, productId: '', unitCost: '', newProduct: createDefaultNewProductDraft() } : item,
+      ),
+    );
+  };
+
+  const handleDraftSupplierChange = (id: string, nextSupplierId: string) => {
+    setDraftItems((current) =>
+      current.map((item) => {
+        if (item.id !== id) {
+          return item;
+        }
+
+        if (item.mode === 'existing') {
+          return {
+            ...item,
+            supplierId: nextSupplierId,
+            productId: '',
+            unitCost: '',
+          };
+        }
+
+        return {
+          ...item,
+          supplierId: nextSupplierId,
+        };
+      }),
     );
   };
 
@@ -409,7 +554,11 @@ export function ProcurementManagement() {
       draftItems.filter((item) => item.id !== draft.id && item.mode === 'existing').map((item) => item.productId).filter(Boolean),
     );
 
-    return supplierProducts.filter((product) => !selectedProductIds.has(product.id) || product.id === draft.productId);
+    const resolvedSupplierId = draft.supplierId || supplierId;
+    return supplierProducts.filter(
+      (product) =>
+        product.preferredSupplierId === resolvedSupplierId && (!selectedProductIds.has(product.id) || product.id === draft.productId),
+    );
   };
 
   const handleSubmitCreateOrder = async () => {
@@ -436,6 +585,11 @@ export function ProcurementManagement() {
 
     const uniqueExistingIds = new Set<string>();
     for (const item of draftItems) {
+      const resolvedSupplierId = item.supplierId || supplierId;
+      if (!resolvedSupplierId) {
+        setFormError('请先为每一行选择供应商。');
+        return;
+      }
       if (Number(item.quantity) <= 0 || !Number.isInteger(Number(item.quantity)) || Number(item.unitCost) <= 0) {
         setFormError('请完整填写每条明细，且数量为正整数、采购单价必须大于 0。');
         return;
@@ -444,6 +598,15 @@ export function ProcurementManagement() {
       if (item.mode === 'existing') {
         if (!item.productId) {
           setFormError('已有商品模式下必须选择商品。');
+          return;
+        }
+        const product = productMap.get(item.productId);
+        if (!product) {
+          setFormError('所选商品不存在或不可用。');
+          return;
+        }
+        if (product.preferredSupplierId !== resolvedSupplierId) {
+          setFormError('当前行商品必须属于该行选择的供应商。');
           return;
         }
         if (uniqueExistingIds.has(item.productId)) {
@@ -474,12 +637,20 @@ export function ProcurementManagement() {
       expectedDate,
       remark: remark.trim(),
       items: draftItems.map((item) => {
+        const resolvedSupplierId = item.supplierId || supplierId;
         if (item.mode === 'existing') {
-          return { mode: 'existing', productId: item.productId, quantity: Number(item.quantity), unitCost: Number(item.unitCost) };
+          return {
+            mode: 'existing',
+            supplierId: resolvedSupplierId,
+            productId: item.productId,
+            quantity: Number(item.quantity),
+            unitCost: Number(item.unitCost),
+          };
         }
 
         return {
           mode: 'new',
+          supplierId: resolvedSupplierId,
           quantity: Number(item.quantity),
           unitCost: Number(item.unitCost),
           newProduct: {
@@ -494,7 +665,7 @@ export function ProcurementManagement() {
       }),
     };
 
-    if (!(await confirm(`确认创建采购单并写入系统？\n供应商：${selectedSupplier?.name || '-'}\n金额：${formatCurrency(totalDraftAmount)}`))) {
+    if (!(await confirm(`确认创建采购单并写入系统？\n供应商：${draftSupplierLabel}\n金额：${formatCurrency(totalDraftAmount)}`))) {
       return;
     }
 
@@ -549,10 +720,19 @@ export function ProcurementManagement() {
               自定义采购单
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-6 p-6">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">供应商</label>
+          <CardContent className="space-y-4 p-4">
+            <div className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[11px] leading-5 text-slate-500 shadow-sm">
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                <span className="whitespace-nowrap"><span className="text-slate-500">单号：</span><span className="font-semibold text-slate-900">{createDraftNo || 'PO-DRAFT'}</span></span>
+                <span className="whitespace-nowrap"><span className="text-slate-500">时间：</span><span className="text-slate-700">{createDraftAt || formatDraftDateTime()}</span></span>
+                <span className="whitespace-nowrap"><span className="text-slate-500">状态：</span><span className="font-semibold text-slate-900">草稿</span></span>
+                <span className="whitespace-nowrap"><span className="text-slate-500">供应商：</span><span className="text-slate-700">{draftSupplierLabel}</span></span>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-medium leading-none text-gray-600">供应商</label>
                 <SearchableSelect
                   value={supplierId}
                   onChange={handleSupplierChange}
@@ -560,6 +740,7 @@ export function ProcurementManagement() {
                   placeholder="请选择供应商"
                   searchPlaceholder="输入供应商名称或提前期检索"
                   emptyText="没有匹配的供应商"
+                  inputClassName="h-9"
                 />
                 <select value={supplierId} onChange={(event) => handleSupplierChange(event.target.value)} className="hidden" tabIndex={-1} aria-hidden="true">
                   <option value="">请选择供应商</option>
@@ -570,19 +751,19 @@ export function ProcurementManagement() {
                   ))}
                 </select>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">预计到货日期</label>
-                <Input type="date" value={expectedDate} onChange={(event) => setExpectedDate(event.target.value)} />
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-medium leading-none text-gray-600">预计到货日期</label>
+                <Input type="date" value={expectedDate} onChange={(event) => setExpectedDate(event.target.value)} className="h-9" />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">供应商提前期</label>
-                <div className="flex h-10 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm text-gray-600">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-medium leading-none text-gray-600">供应商提前期</label>
+                <div className="flex h-9 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm text-gray-600">
                   {selectedSupplier ? `${selectedSupplier.leadTimeDays} 天` : '选择供应商后自动带出'}
                 </div>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">备注</label>
-                <Input value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="可填写采购备注" />
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-medium leading-none text-gray-600">备注</label>
+                <Input value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="可填写采购备注" className="h-9" />
               </div>
             </div>
 
@@ -602,47 +783,55 @@ export function ProcurementManagement() {
               </div>
 
               {!supplierId ? <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-sm text-gray-500">请先选择供应商，再录入采购明细。</div> : null}
-              {supplierId && supplierProducts.length === 0 ? <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 px-4 py-6 text-center text-sm text-amber-700">当前供应商下暂无现有商品，可直接使用“新增商品”模式采购新品。</div> : null}
+              {supplierId && currentSupplierProducts.length === 0 ? <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 px-4 py-6 text-center text-sm text-amber-700">当前供应商下暂无现有商品，可直接使用“新增商品”模式采购新品。</div> : null}
 
-              <div className="space-y-3">
-                {draftItems.map((item) => {
-                  const selectedProduct = item.productId ? productMap.get(item.productId) || null : null;
+              <div className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50/60">
+                <div className="grid grid-cols-[124px_110px_minmax(0,1fr)_104px_124px_84px] gap-2 border-b border-gray-200 bg-white/80 px-3 py-2 text-[11px] font-medium leading-none text-gray-600">
+                  <div>供应商</div>
+                  <div>模式</div>
+                  <div>商品名称</div>
+                  <div>数量</div>
+                  <div>采购单价</div>
+                  <div>操作</div>
+                </div>
+                <div className="space-y-0.5 p-1.5">
+                  {draftItems.map((item) => {
+                    const resolvedSupplierId = item.supplierId || supplierId;
+                    const selectableProducts = getSelectableProducts(item);
 
-                  return (
-                    <div key={item.id} className="space-y-4 rounded-xl border border-gray-200 bg-gray-50/60 p-4">
-                      <div className="grid gap-3 md:grid-cols-12">
-                        <div className="space-y-2 md:col-span-3">
-                          <label className="text-xs font-medium text-gray-600">明细模式</label>
-                          <select value={item.mode} onChange={(event) => handleModeChange(item.id, event.target.value as ProcurementDraftMode)} className="h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                            <option value="existing">已有商品</option>
-                            <option value="new">新增商品</option>
-                          </select>
-                        </div>
-                        <div className="space-y-2 md:col-span-3">
-                          <label className="text-xs font-medium text-gray-600">数量</label>
-                          <Input type="number" min="1" step="1" value={item.quantity} onChange={(event) => handleDraftChange(item.id, 'quantity', event.target.value)} placeholder="0" />
-                        </div>
-                        <div className="space-y-2 md:col-span-3">
-                          <label className="text-xs font-medium text-gray-600">采购单价</label>
-                          <Input type="number" min="0" step="0.01" value={item.unitCost} onChange={(event) => handleDraftChange(item.id, 'unitCost', event.target.value)} placeholder="0.00" />
-                        </div>
-                        <div className="space-y-2 md:col-span-3">
-                          <label className="text-xs font-medium text-gray-600">操作</label>
-                          <Button type="button" variant="outline" className="w-full border-red-200 text-red-600 hover:bg-red-50" onClick={() => handleRemoveItem(item.id)} disabled={draftItems.length === 1}>
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            删除
-                          </Button>
-                        </div>
-                      </div>
+                    return (
+                      <div
+                        key={item.id}
+                        className="grid grid-cols-[124px_110px_minmax(0,1fr)_104px_124px_84px] items-center gap-2 rounded-lg border border-gray-200 bg-white px-2 py-1.5"
+                      >
+                        <select
+                          value={resolvedSupplierId}
+                          onChange={(event) => handleDraftSupplierChange(item.id, event.target.value)}
+                          className="h-9 w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">请选择供应商</option>
+                          {formOptions.suppliers.map((supplier) => (
+                            <option key={supplier.id} value={supplier.id}>
+                              {supplier.name}
+                            </option>
+                          ))}
+                        </select>
 
-                      {item.mode === 'existing' ? (
-                        <div className="grid gap-3 md:grid-cols-12">
-                          <div className="space-y-2 md:col-span-8">
-                            <label className="text-xs font-medium text-gray-600">已有商品</label>
+                        <select
+                          value={item.mode}
+                          onChange={(event) => handleModeChange(item.id, event.target.value as ProcurementDraftMode)}
+                          className="h-9 w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="existing">已有商品</option>
+                          <option value="new">新增商品</option>
+                        </select>
+
+                        {item.mode === 'existing' ? (
+                          <div className="min-w-0">
                             <SearchableSelect
                               value={item.productId}
                               onChange={(value) => handleDraftChange(item.id, 'productId', value)}
-                              options={getSelectableProducts(item).map((product) => ({
+                              options={selectableProducts.map((product) => ({
                                 value: product.id,
                                 label: product.name,
                                 keywords: [product.name, product.sku, product.unit, product.preferredSupplier, String(product.costPrice)],
@@ -651,62 +840,83 @@ export function ProcurementManagement() {
                               placeholder="请选择商品"
                               searchPlaceholder="输入商品名、SKU 或单位检索"
                               emptyText="没有匹配的商品"
-                              disabled={!supplierId || supplierProducts.length === 0}
+                              disabled={!resolvedSupplierId || selectableProducts.length === 0}
+                              inputClassName="h-9"
                             />
-                            <select value={item.productId} onChange={(event) => handleDraftChange(item.id, 'productId', event.target.value)} className="hidden" disabled={!supplierId || supplierProducts.length === 0} tabIndex={-1} aria-hidden="true">
+                            <select
+                              value={item.productId}
+                              onChange={(event) => handleDraftChange(item.id, 'productId', event.target.value)}
+                              className="hidden"
+                              disabled={!resolvedSupplierId || selectableProducts.length === 0}
+                              tabIndex={-1}
+                              aria-hidden="true"
+                            >
                               <option value="">请选择商品</option>
-                              {getSelectableProducts(item).map((product) => (
+                              {selectableProducts.map((product) => (
                                 <option key={product.id} value={product.id}>
                                   {renderProductLabel(product)}
                                 </option>
                               ))}
                             </select>
                           </div>
-                          <div className="space-y-2 md:col-span-4">
-                            <label className="text-xs font-medium text-gray-600">默认采购信息</label>
-                            <div className="flex h-10 items-center rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-600">
-                              {selectedProduct ? `${selectedProduct.unit} / 成本 ${formatCurrency(selectedProduct.costPrice)}` : '选择商品后自动带出'}
-                            </div>
+                        ) : (
+                          <div className="grid min-w-0 grid-cols-[minmax(0,1.2fr)_168px_128px] gap-1.5">
+                            <Input
+                              value={item.newProduct.name}
+                              onChange={(event) => handleNewProductChange(item.id, 'name', event.target.value)}
+                              placeholder="新品名称"
+                              className="h-9"
+                            />
+                            <Input
+                              value={item.newProduct.sku}
+                              onChange={(event) => handleNewProductChange(item.id, 'sku', event.target.value)}
+                              placeholder="留空自动生成 SKU"
+                              className="h-9"
+                            />
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={item.newProduct.salePrice}
+                              onChange={(event) => handleNewProductChange(item.id, 'salePrice', event.target.value)}
+                              placeholder="销售价"
+                              className="h-9"
+                            />
                           </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-4">
-                          <div className="grid gap-3 md:grid-cols-12">
-                            <div className="space-y-2 md:col-span-4">
-                              <label className="text-xs font-medium text-gray-600">新品名称</label>
-                              <Input value={item.newProduct.name} onChange={(event) => handleNewProductChange(item.id, 'name', event.target.value)} placeholder="例如：新品纸巾 6包装" />
-                            </div>
-                            <div className="space-y-2 md:col-span-2">
-                              <label className="text-xs font-medium text-gray-600">SKU</label>
-                              <Input value={item.newProduct.sku} onChange={(event) => handleNewProductChange(item.id, 'sku', event.target.value)} placeholder="留空自动生成" />
-                            </div>
-                            <div className="space-y-2 md:col-span-2">
-                              <label className="text-xs font-medium text-gray-600">销售价</label>
-                              <Input type="number" min="0" step="0.01" value={item.newProduct.salePrice} onChange={(event) => handleNewProductChange(item.id, 'salePrice', event.target.value)} placeholder="默认等于采购价" />
-                            </div>
-                            <div className="space-y-2 md:col-span-2">
-                              <label className="text-xs font-medium text-gray-600">品类</label>
-                              <Input value={item.newProduct.category} onChange={(event) => handleNewProductChange(item.id, 'category', event.target.value)} />
-                            </div>
-                            <div className="space-y-2 md:col-span-2">
-                              <label className="text-xs font-medium text-gray-600">单位</label>
-                              <Input value={item.newProduct.unit} onChange={(event) => handleNewProductChange(item.id, 'unit', event.target.value)} />
-                            </div>
-                          </div>
-                          <div className="grid gap-3 md:grid-cols-12">
-                            <div className="space-y-2 md:col-span-3">
-                              <label className="text-xs font-medium text-gray-600">安全库存</label>
-                              <Input type="number" min="0" step="1" value={item.newProduct.safeStock} onChange={(event) => handleNewProductChange(item.id, 'safeStock', event.target.value)} />
-                            </div>
-                            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800 md:col-span-9">
-                              新商品会在提交采购单时同步创建主数据，默认供应商为当前供应商，未填写 SKU 时系统会自动生成下一个可用编码。
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                        )}
+
+                        <Input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={item.quantity}
+                          onChange={(event) => handleDraftChange(item.id, 'quantity', event.target.value)}
+                          placeholder="0"
+                          className="h-9"
+                        />
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={item.unitCost}
+                          onChange={(event) => handleDraftChange(item.id, 'unitCost', event.target.value)}
+                          placeholder="0.00"
+                          className="h-9"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-9 w-full border-red-200 text-red-600 hover:bg-red-50"
+                          onClick={() => handleRemoveItem(item.id)}
+                          disabled={draftItems.length === 1}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          删除
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
@@ -813,6 +1023,17 @@ export function ProcurementManagement() {
                       <RowActionMenu
                         items={[
                           { id: 'view-detail', label: '查看单据', icon: Eye, onSelect: () => void handleViewDetail(po.id) },
+                          ...(getNextProcurementAction(po)
+                            ? [
+                                {
+                                  id: 'advance-status',
+                                  label: getNextProcurementAction(po)?.label || '推进状态',
+                                  icon: PackagePlus,
+                                  onSelect: () => void handleAdvanceProcurementStatus(po),
+                                  disabled: !canManageProcurement,
+                                },
+                              ]
+                            : []),
                           { id: 'filter-supplier', label: '按同供应商筛选', icon: Filter, onSelect: () => handleFilterSupplier(po.supplier) },
                           { id: 'filter-status', label: '按同状态筛选', icon: Filter, onSelect: () => handleFilterStatus(po.status) },
                           { id: 'force-status', label: '强制改状态', icon: Sparkles, onSelect: () => void handleForceUpdateStatus(po), disabled: !isSuperAdmin },

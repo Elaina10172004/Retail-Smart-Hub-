@@ -1,8 +1,11 @@
 export type CustomerStatus = 'active' | 'inactive';
+export type CustomerType = 'reseller' | 'supplier';
 
 export interface CustomerSummary {
   customerCount: number;
   activeCustomerCount: number;
+  resellerCount: number;
+  supplierCount: number;
   totalSales: number;
   thisMonthActiveCount: number;
 }
@@ -10,6 +13,7 @@ export interface CustomerSummary {
 export interface CustomerRecord {
   id: string;
   name: string;
+  customerType: CustomerType;
   channelPreference: string;
   contactName: string;
   phone: string;
@@ -22,6 +26,7 @@ export interface CustomerRecord {
 
 export interface CreateCustomerPayload {
   name: string;
+  customerType: CustomerType;
   channelPreference: string;
   contactName?: string;
   phone?: string;

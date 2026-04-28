@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .common import AgentConfig
+from .common import AgentConfig, parse_json_object_text
 
 
 def _resolve_provider_settings(config: AgentConfig, role: str) -> Dict[str, str]:
@@ -112,7 +112,7 @@ def _unwrap_json_answer_text(text: str) -> str | None:
     if isinstance(answer, str) and answer.strip():
         return answer.strip()
     if mode in {"ANSWER", "FINAL", "RESPONSE", "RESULT"}:
-        for key in ("reply", "response", "final_answer", "final", "content", "message"):
+        for key in ("reply", "response", "final_answer", "final", "content", "message", "conclusion", "summary"):
             value = parsed.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
@@ -169,38 +169,50 @@ def _normalize_openai_message_content(content: Any) -> str:
     return _normalize_text_part(content)
 
 
+def _build_openai_content_blocks(content: Any) -> Any:
+    if not isinstance(content, Mapping) or ("images" not in content and "text" not in content):
+        return _normalize_text_part(content)
+
+    blocks: List[Dict[str, Any]] = []
+    text = _normalize_text_part(content.get("text"))
+    if text:
+        blocks.append({"type": "text", "text": text})
+
+    images = content.get("images")
+    if isinstance(images, Sequence) and not isinstance(images, (str, bytes, bytearray)):
+        for item in images:
+            if not isinstance(item, Mapping):
+                continue
+            data_url = str(item.get("data_url") or item.get("dataUrl") or "").strip()
+            if not data_url:
+                continue
+            parsed = _parse_data_url(data_url)
+            if parsed is None:
+                continue
+            blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": data_url,
+                    },
+                }
+            )
+
+    if not blocks:
+        return text
+    if len(blocks) == 1 and blocks[0].get("type") == "text":
+        return text
+    return blocks
+
+
 def _preview_console_block(text: str, limit: int = 180) -> str:
     if limit > 0 and len(text) > limit:
         return text[:limit] + "...(truncated)"
     return text
 
 
-def _parse_json_object_text(value: Any) -> Dict[str, Any] | None:
-    candidate = str(value or "").strip()
-    if not candidate:
-        return None
-    if candidate.startswith("```"):
-        stripped = candidate.strip("`").strip()
-        if stripped.lower().startswith("json"):
-            stripped = stripped[4:].strip()
-        candidate = stripped
-    try:
-        parsed = json.loads(candidate)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if 0 <= start < end:
-            try:
-                parsed = json.loads(candidate[start : end + 1])
-                return parsed if isinstance(parsed, dict) else None
-            except Exception:
-                return None
-    return None
-
-
 def _unwrap_json_answer_for_log(text: str) -> str:
-    parsed = _parse_json_object_text(text)
+    parsed = parse_json_object_text(text)
     if not isinstance(parsed, dict):
         return text
     for key in ("answer", "reply", "response", "final", "content", "message"):
@@ -462,9 +474,14 @@ def _normalize_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str,
                 tool_message["tool_call_id"] = tool_call_id
             normalized.append(tool_message)
             continue
+        normalized_content = (
+            _build_openai_content_blocks(message.get("content"))
+            if role == "user"
+            else _normalize_openai_message_content(message.get("content"))
+        )
         next_message: Dict[str, Any] = {
             "role": role,
-            "content": _normalize_openai_message_content(message.get("content")),
+            "content": normalized_content,
         }
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list):
@@ -798,6 +815,11 @@ def _build_openai_compatible_request(
         body["tool_choice"] = tool_choice or "auto"
     if not config.requires_reasoning_for_tool_calls(role):
         body["temperature"] = 0.3
+    elif tool_choice == "none":
+        # Answer/Plan phases: disable thinking for clean structured output
+        body["temperature"] = 0.1
+    else:
+        body["reasoning_effort"] = "medium"
     return endpoint, headers, body
 
 

@@ -113,6 +113,39 @@ def json_dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
+def compact_text(value: Any, *, limit: int = 0) -> str:
+    """Collapse whitespace in text. If limit > 0, truncate."""
+    text = " ".join(str(value or "").strip().split())
+    if limit > 0 and len(text) > limit:
+        return text[: max(0, limit - 15)] + "...(truncated)"
+    return text
+
+
+def parse_json_object_text(text: Any) -> Dict[str, Any] | None:
+    """Parse a JSON object from text, with markdown fence and brace-fallback."""
+    candidate = str(text or "").strip()
+    if not candidate:
+        return None
+    if candidate.startswith("```"):
+        stripped = candidate.strip("`").strip()
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:].strip()
+        candidate = stripped
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if 0 <= start < end:
+            try:
+                parsed = json.loads(candidate[start : end + 1])
+                return parsed if isinstance(parsed, dict) else None
+            except Exception:
+                return None
+    return None
+
+
 def hash_text(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
@@ -189,12 +222,12 @@ class AgentConfig:
     request_timeout_ms: int = field(
         default_factory=lambda: parse_int(os.getenv("AI_AGENT_REQUEST_TIMEOUT_MS"), 120000)
     )
-    provider: str = field(default_factory=lambda: os.getenv("AI_PROVIDER", "deepseek"))
-    small_provider: str = field(default_factory=lambda: os.getenv("AI_SMALL_PROVIDER", os.getenv("AI_PROVIDER", "deepseek")))
+    provider: str = field(default_factory=lambda: os.getenv("AI_PROVIDER", "openai"))
+    small_provider: str = field(default_factory=lambda: os.getenv("AI_SMALL_PROVIDER", os.getenv("AI_PROVIDER", "openai")))
     small_base_url: str = field(default_factory=lambda: os.getenv("AI_SMALL_BASE_URL", "").rstrip("/"))
     small_model: str = field(default_factory=lambda: os.getenv("AI_SMALL_MODEL", ""))
     small_api_key: str = field(default_factory=lambda: os.getenv("AI_SMALL_API_KEY", ""))
-    large_provider: str = field(default_factory=lambda: os.getenv("AI_LARGE_PROVIDER", os.getenv("AI_PROVIDER", "deepseek")))
+    large_provider: str = field(default_factory=lambda: os.getenv("AI_LARGE_PROVIDER", os.getenv("AI_PROVIDER", "openai")))
     large_base_url: str = field(default_factory=lambda: os.getenv("AI_LARGE_BASE_URL", "").rstrip("/"))
     large_model: str = field(default_factory=lambda: os.getenv("AI_LARGE_MODEL", ""))
     large_api_key: str = field(default_factory=lambda: os.getenv("AI_LARGE_API_KEY", ""))
@@ -206,7 +239,7 @@ class AgentConfig:
     openai_base_url: str = field(
         default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     )
-    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-5.4-mini"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     gemini_base_url: str = field(
         default_factory=lambda: os.getenv(
@@ -274,26 +307,8 @@ class AgentConfig:
     rag_memory_retention_days: int = field(
         default_factory=lambda: parse_int(os.getenv("RAG_MEMORY_RETENTION_DAYS"), 60)
     )
-    ai_layered_agent_enabled: bool = field(
-        default_factory=lambda: parse_bool(os.getenv("AI_LAYERED_AGENT_ENABLED"), True)
-    )
-    ai_layered_max_execute_rounds: int = field(
-        default_factory=lambda: parse_int(os.getenv("AI_LAYERED_MAX_EXECUTE_ROUNDS"), 2)
-    )
-    ai_layered_context_char_budget: int = field(
-        default_factory=lambda: parse_int(os.getenv("AI_LAYERED_CONTEXT_CHAR_BUDGET"), 12000)
-    )
-    ai_layered_web_fallback_max_rounds: int = field(
-        default_factory=lambda: parse_int(os.getenv("AI_LAYERED_WEB_FALLBACK_MAX_ROUNDS"), 1)
-    )
-    ai_layered_console_log: bool = field(
-        default_factory=lambda: parse_bool(os.getenv("AI_LAYERED_CONSOLE_LOG"), True)
-    )
-    ai_layered_console_log_max_chars: int = field(
-        default_factory=lambda: parse_int(os.getenv("AI_LAYERED_CONSOLE_LOG_MAX_CHARS"), 1200)
-    )
     ai_model_io_console_log: bool = field(
-        default_factory=lambda: parse_bool(os.getenv("AI_MODEL_IO_CONSOLE_LOG"), True)
+        default_factory=lambda: parse_bool(os.getenv("AI_MODEL_IO_CONSOLE_LOG"), False)
     )
     ai_model_io_console_log_max_chars: int = field(
         default_factory=lambda: parse_int(os.getenv("AI_MODEL_IO_CONSOLE_LOG_MAX_CHARS"), 0)
@@ -363,7 +378,15 @@ class AgentConfig:
         }
 
     def resolve_model_profile(self, role: str = "large") -> Dict[str, str]:
-        normalized_role = "small" if str(role or "").strip().lower() == "small" else "large"
+        role_lower = str(role or "").strip().lower()
+        if role_lower == "vision":
+            # Vision role: use small model config (typically a fast vision model)
+            # Falls back through small -> large chain
+            normalized_role = "small"
+        elif role_lower == "small":
+            normalized_role = "small"
+        else:
+            normalized_role = "large"
         if normalized_role == "small":
             provider_raw = self.small_provider or self.provider
             defaults = self._resolve_provider_defaults(provider_raw)
@@ -416,7 +439,11 @@ class AgentConfig:
 
     def requires_reasoning_for_tool_calls(self, role: str = "large") -> bool:
         profile = self.resolve_model_profile(role)
-        return profile["provider"] == "deepseek" and profile["model"] == "deepseek-reasoner"
+        if profile["provider"] != "deepseek":
+            return False
+        model = profile["model"]
+        # All DeepSeek models that support thinking mode require reasoning_content echo
+        return model in {"deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-r1"}
 
     def is_tavily_search_enabled(self) -> bool:
         key = (self.tavily_api_key or "").strip()

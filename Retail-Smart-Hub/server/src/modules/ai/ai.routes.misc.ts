@@ -6,7 +6,6 @@ import { fail, ok } from '../../shared/response';
 import { parseWithSchema } from '../../shared/validation';
 import { getAiStatusForRuntime } from './ai.service';
 import { getAiStatusWithRuntime } from './ai.runtime-facade';
-import { processDocumentSkill } from './import.service';
 import { getSkillStats } from './skill.service';
 import { getAiRuntimeConfigSnapshot, updateAiRuntimeConfig } from './ai.runtime-config.service';
 import { restartPythonSidecar } from './python-sidecar.service';
@@ -69,7 +68,6 @@ export function registerAiMiscRoutes(aiRouter: Router) {
         largeApiKey: payload.largeApiKey,
         largeBaseUrl: payload.largeBaseUrl,
         largeModel: payload.largeModel,
-        layeredAgentEnabled: payload.layeredAgentEnabled,
       });
 
       await restartPythonSidecar();
@@ -84,7 +82,6 @@ export function registerAiMiscRoutes(aiRouter: Router) {
         smallModel: config.smallModelProfile.model,
         largeProvider: config.largeModelProfile.provider,
         largeModel: config.largeModelProfile.model,
-        layeredAgentEnabled: config.layeredAgentEnabled,
         deepseekBaseUrl: config.deepseekBaseUrl,
         deepseekModel: config.deepseekModel,
         openaiBaseUrl: config.openaiBaseUrl,
@@ -123,46 +120,16 @@ export function registerAiMiscRoutes(aiRouter: Router) {
 
   aiRouter.post('/import', (req, res) => {
     try {
-      // Compatibility endpoint: keep old route contract reachable, but forward to
-      // document skill planning flow so write operations still require approval.
       const payload = parseWithSchema(aiImportBodySchema, req.body, 'ai-import');
-      const result = processDocumentSkill({
-        // Use ASCII import intent so mode detection is stable across code pages.
-        prompt: 'import these files',
-        attachments: [
-          {
-            fileName: payload.fileName,
-            target: payload.target,
-            rows: payload.rows as Array<Record<string, unknown>>,
-          },
-        ],
-        userId: req.auth?.id || 'anonymous',
-        username: req.auth?.username || 'unknown',
-        permissions: req.auth?.permissions || [],
-      });
 
       appendAuditLog('ai_import_compat', 'ai', req.auth?.id || 'anonymous', {
         by: req.auth?.username || 'unknown',
         fileName: payload.fileName,
         target: payload.target,
-        pendingActionId: result.pendingAction?.id,
-        pendingActionStatus: result.pendingAction?.status,
-        toolCalls: result.toolCalls,
-        compatibilityMode: 'route-bridged-to-document-skill',
+        compatibilityMode: 'disabled-use-chat-attachments',
       });
 
-      return ok(
-        res,
-        {
-          ...result,
-          compatibility: {
-            deprecated: true,
-            preferredPath: '/api/ai/chat + attachments',
-            mode: 'compat-route-forwarded-to-document-skill',
-          },
-        },
-        '兼容导入入口已切换为 chat/document skill 语义：先规划、再审批确认。',
-      );
+      return fail(res, 410, 'Standalone import endpoint is disabled. Use AI chat with attachments instead.');
     } catch (error) {
       return fail(
         res,

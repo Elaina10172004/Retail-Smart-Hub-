@@ -1,4 +1,4 @@
-﻿export type ModuleStatus = 'ui-shell' | 'api-skeleton' | 'planned';
+export type ModuleStatus = 'ui-shell' | 'api-skeleton' | 'planned';
 
 export interface ModuleCatalogEntry {
   id: string;

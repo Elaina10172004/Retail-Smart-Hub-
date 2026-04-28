@@ -1,6 +1,6 @@
 import { env } from '../../config/env';
 import type { AiApproval, AiPendingAction, AiToolCallRecord } from './dto/tool.dto';
-import type { AiDocumentAttachment } from './import.service';
+import type { AiDocumentAttachment } from './attachment-context.service';
 import type { AiWebSource } from './ai.types';
 
 interface PythonRequestOptions {
@@ -12,6 +12,11 @@ interface PythonRequestOptions {
 export interface PythonAgentChatRequest {
   prompt: string;
   conversationId?: string;
+  resume?: {
+    interruptionId: string;
+    optionId: string;
+    prompt?: string;
+  };
   userId: string;
   tenantId?: string;
   username: string;
@@ -48,6 +53,19 @@ export interface PythonAgentChatResponse {
   };
   pendingAction?: AiPendingAction;
   approval?: AiApproval;
+  interruption?: {
+    id: string;
+    kind: 'clarification';
+    status: 'awaiting_user';
+    title: string;
+    message: string;
+    options: Array<{
+      id: string;
+      label: string;
+      prompt: string;
+      description?: string;
+    }>;
+  };
   reasoningContent?: string;
   configured: boolean;
   provider: string;
@@ -63,6 +81,7 @@ export interface PythonAgentStreamMeta {
   answer_meta?: PythonAgentChatResponse['answer_meta'];
   pendingAction?: AiPendingAction;
   approval?: AiApproval;
+  interruption?: PythonAgentChatResponse['interruption'];
   configured: boolean;
   provider: string;
   model: string;

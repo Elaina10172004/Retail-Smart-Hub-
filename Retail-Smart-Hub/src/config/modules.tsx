@@ -1,4 +1,4 @@
-﻿import type { ComponentType } from 'react';
+import type { ComponentType } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   Archive,
@@ -8,14 +8,12 @@ import {
   LayoutDashboard,
   Package,
   Send,
-  SlidersHorizontal,
   Settings,
   ShoppingCart,
   Truck,
   Users,
 } from 'lucide-react';
 import { AIAssistant } from '@/pages/AIAssistant';
-import { ConfigManagement } from '@/pages/ConfigManagement';
 import { CustomerProfiles } from '@/pages/CustomerProfiles';
 import { Dashboard } from '@/pages/Dashboard';
 import { FinancialManagement } from '@/pages/FinancialManagement';
@@ -39,7 +37,6 @@ export type AppModuleId =
   | 'finance'
   | 'reports'
   | 'ai'
-  | 'config'
   | 'settings';
 
 export interface AppModuleDefinition {
@@ -60,7 +57,6 @@ export const appModules: AppModuleDefinition[] = [
   { id: 'finance', label: '财务管理', icon: CreditCard, component: FinancialManagement },
   { id: 'reports', label: '报表分析', icon: BarChart3, component: ReportAnalysis },
   { id: 'ai', label: 'AI 智能助手', icon: Bot, component: AIAssistant },
-  { id: 'config', label: '配置管理', icon: SlidersHorizontal, component: ConfigManagement },
   { id: 'settings', label: '系统设置', icon: Settings, component: SystemAdmin },
 ];
 
@@ -92,8 +88,6 @@ export function canAccessModule(moduleId: AppModuleId, permissions: string[]) {
       return hasAnyPermission(permissions, ['finance.view']);
     case 'reports':
       return hasAnyPermission(permissions, ['reports.view']);
-    case 'config':
-      return hasAnyPermission(permissions, ['settings.access-control']);
     case 'settings':
       return true;
     default:

@@ -1,4 +1,4 @@
-﻿import type { ReadOnlyToolDescriptor } from '../dto/tool.dto';
+import type { ReadOnlyToolDescriptor } from '../dto/tool.dto';
 
 export const READ_ONLY_TOOL_DESCRIPTORS: ReadOnlyToolDescriptor[] = [
   { name: 'get_dashboard_overview', description: '查询经营仪表盘总览。', requiredPermissions: ['reports.view'] },

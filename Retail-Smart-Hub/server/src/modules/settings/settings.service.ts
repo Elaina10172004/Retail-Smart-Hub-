@@ -1,4 +1,4 @@
-﻿import { appendAuditLog, db, ensureAccessControlData, ensureAuthSecurityData, nextMasterDataId } from '../../database/db';
+import { appendAuditLog, db, ensureAccessControlData, ensureAuthSecurityData, nextMasterDataId } from '../../database/db';
 import { issueTemporaryPasswordForUser } from '../../shared/auth';
 
 export interface AccessSummary {

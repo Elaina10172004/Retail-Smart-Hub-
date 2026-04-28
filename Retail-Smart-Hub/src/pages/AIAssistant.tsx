@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDown,
@@ -34,7 +34,9 @@ import {
 import type {
   AiAttachmentDraft,
   AiChatSession,
+  AiClarificationCard,
   AiImportTarget,
+  AiInterruption,
   AiMessage,
   AiPendingAction,
   AiStatus,
@@ -288,6 +290,75 @@ function normalizePendingAction(action: AiPendingAction): AiPendingAction {
   return action;
 }
 
+function sanitizeClarification(raw: unknown): AiClarificationCard | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+
+  const candidate = raw as Partial<AiClarificationCard>;
+  const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
+  const message = typeof candidate.message === 'string' ? candidate.message.trim() : '';
+  const options = Array.isArray(candidate.options)
+    ? candidate.options
+        .map((item) => {
+          if (!item || typeof item !== 'object') {
+            return null;
+          }
+          const option = item as Partial<AiClarificationCard['options'][number]>;
+          const id = typeof option.id === 'string' ? option.id.trim() : '';
+          const label = typeof option.label === 'string' ? option.label.trim() : '';
+          const prompt = typeof option.prompt === 'string' ? option.prompt.trim() : '';
+          const description =
+            typeof option.description === 'string' && option.description.trim() ? option.description.trim() : undefined;
+          if (!id || !label || !prompt) {
+            return null;
+          }
+          return { id, label, prompt, description };
+        })
+        .filter(Boolean)
+    : [];
+
+  if ((!title && !message) || options.length === 0) {
+    return undefined;
+  }
+
+  return {
+    title: title || '请选择下一步',
+    message: message || title || 'AI 需要您确认下一步处理方式。',
+    options,
+  };
+}
+
+function sanitizeInterruption(raw: unknown): AiInterruption | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+
+  const candidate = raw as Partial<AiInterruption>;
+  const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+  const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
+  const message = typeof candidate.message === 'string' ? candidate.message.trim() : '';
+  const status = candidate.status === 'awaiting_user' ? candidate.status : 'awaiting_user';
+  const kind = candidate.kind === 'clarification' ? candidate.kind : 'clarification';
+  const base = sanitizeClarification({
+    title,
+    message,
+    options: Array.isArray(candidate.options) ? candidate.options : [],
+  });
+  if (!id || !base) {
+    return undefined;
+  }
+
+  return {
+    id,
+    kind,
+    status,
+    title: base.title,
+    message: base.message,
+    options: base.options,
+  };
+}
+
 function sanitizeMessage(raw: unknown): AiMessage | null {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -342,6 +413,8 @@ function sanitizeMessage(raw: unknown): AiMessage | null {
             undoneAt: typeof message.pendingAction.undoneAt === 'string' ? message.pendingAction.undoneAt : undefined,
           })
         : undefined,
+    clarification: sanitizeClarification(message.clarification),
+    interruption: sanitizeInterruption(message.interruption),
     trace: Array.isArray(message.trace) ? message.trace.filter((item): item is string => typeof item === 'string') : undefined,
     isSystem: Boolean(message.isSystem),
   };
@@ -785,6 +858,11 @@ export function AIAssistant() {
       assistantMessageId: string;
       payload: {
         prompt: string;
+        resume?: {
+          interruptionId: string;
+          optionId: string;
+          prompt?: string;
+        };
         history?: Array<{
           role: 'user' | 'assistant';
           content: string;
@@ -806,7 +884,7 @@ export function AIAssistant() {
 
       let latestMeta: AiChatStreamMeta | null = null;
       const startedAt = Date.now();
-      const shouldUseStreaming = (status?.provider || '').trim().toLowerCase() === 'deepseek';
+      const shouldUseStreaming = status?.configured !== false;
 
       const patchAssistantMessage = (
         updater: (message: AiMessage) => AiMessage,
@@ -847,6 +925,7 @@ export function AIAssistant() {
               {
                 prompt: input.payload.prompt,
                 conversationId: input.sessionId,
+                resume: input.payload.resume,
                 history: input.payload.history,
                 attachments: input.payload.attachments ?? [],
               },
@@ -860,6 +939,8 @@ export function AIAssistant() {
                     webSources: meta.webSources,
                     toolCalls: meta.toolCalls,
                     pendingAction: meta.pendingAction ? normalizePendingAction(meta.pendingAction) : undefined,
+                    clarification: sanitizeClarification(meta.clarification),
+                    interruption: sanitizeInterruption(meta.interruption),
                     trace: meta.trace,
                   }));
                 },
@@ -880,6 +961,7 @@ export function AIAssistant() {
               await sendAiChat({
                 prompt: input.payload.prompt,
                 conversationId: input.sessionId,
+                resume: input.payload.resume,
                 history: input.payload.history,
                 attachments: input.payload.attachments ?? [],
               })
@@ -899,6 +981,8 @@ export function AIAssistant() {
             webSources: response.webSources,
             toolCalls: response.toolCalls,
             pendingAction: response.pendingAction ? normalizePendingAction(response.pendingAction) : undefined,
+            clarification: sanitizeClarification(response.clarification),
+            interruption: sanitizeInterruption(response.interruption),
             trace: response.trace,
           }),
           new Date().toISOString(),
@@ -920,7 +1004,7 @@ export function AIAssistant() {
         const message = requestError instanceof Error ? requestError.message : '模型请求失败';
         patchAssistantMessage((draft) => ({
           ...draft,
-          content: draft.content || `请求失败：${message}`,
+          content: `请求失败：${message}`,
           meta: '接口异常',
           citations: latestMeta?.citations || draft.citations,
           webSources: latestMeta?.webSources || draft.webSources,
@@ -928,6 +1012,8 @@ export function AIAssistant() {
           pendingAction: latestMeta?.pendingAction
             ? normalizePendingAction(latestMeta.pendingAction)
             : draft.pendingAction,
+          clarification: latestMeta?.clarification ? sanitizeClarification(latestMeta.clarification) : draft.clarification,
+          interruption: latestMeta?.interruption ? sanitizeInterruption(latestMeta.interruption) : draft.interruption,
           trace: latestMeta?.trace || draft.trace,
         }));
 
@@ -939,7 +1025,7 @@ export function AIAssistant() {
         emitAiSessionUpdate(storageKey);
       }
     },
-    [status?.provider, storageKey],
+    [status?.configured, storageKey],
   );
 
   useEffect(() => {
@@ -1197,7 +1283,14 @@ export function AIAssistant() {
     }
   }
 
-  async function handleSend(rawPrompt?: string) {
+  async function handleSend(
+    rawPrompt?: string,
+    resume?: {
+      interruptionId: string;
+      optionId: string;
+      prompt?: string;
+    },
+  ) {
     if (!activeSession) {
       return;
     }
@@ -1290,10 +1383,25 @@ export function AIAssistant() {
       assistantMessageId,
       payload: {
         prompt,
+        resume,
         history,
         attachments: attachmentDrafts,
       },
     });
+  }
+
+  function handleClarificationOption(
+    optionPrompt: string,
+    resume?: {
+      interruptionId: string;
+      optionId: string;
+      prompt?: string;
+    },
+  ) {
+    if (!optionPrompt.trim()) {
+      return;
+    }
+    void handleSend(optionPrompt, resume);
   }
 
   async function handleImportFile(file: File) {
@@ -1681,6 +1789,42 @@ export function AIAssistant() {
                           </Button>
                         </div>
                       ) : null}
+                    </div>
+                  ) : null}
+                  {message.role === 'assistant' && (message.interruption || message.clarification) ? (
+                    <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 text-xs text-blue-900">
+                      <div className="font-medium text-blue-950">{message.interruption?.title || message.clarification?.title}</div>
+                      <div className="mt-1 text-blue-800">{message.interruption?.message || message.clarification?.message}</div>
+                      <div className="mt-3 grid gap-2">
+                        {(message.interruption?.options || message.clarification?.options || []).map((option) => (
+                          <button
+                            key={`${message.id}-${option.id}`}
+                            type="button"
+                            className="group relative rounded-lg border border-l-4 border-blue-200 border-l-blue-200 bg-white py-2 pl-2.5 pr-3 text-left transition-all duration-200 ease-out hover:scale-[1.02] hover:border-blue-400 hover:border-l-blue-500 hover:bg-blue-50 hover:shadow-md hover:shadow-blue-200/50 active:scale-[0.98] active:bg-blue-100"
+                            onClick={() => {
+                              handleClarificationOption(
+                                option.prompt,
+                                message.interruption
+                                  ? {
+                                      interruptionId: message.interruption.id,
+                                      optionId: option.id,
+                                      prompt: option.prompt,
+                                    }
+                                  : undefined,
+                              );
+                            }}
+                            disabled={isLoading}
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-sm font-medium text-blue-950">{option.label}</span>
+                              <span className="text-blue-400 opacity-0 transition-opacity duration-200 group-hover:opacity-100">→</span>
+                            </div>
+                            {option.description ? (
+                              <div className="mt-0.5 text-[11px] leading-5 text-blue-700">{option.description}</div>
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   ) : null}
                 </div>

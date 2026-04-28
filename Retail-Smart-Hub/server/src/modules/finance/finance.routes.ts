@@ -1,4 +1,4 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
@@ -73,13 +73,26 @@ financeRouter.post('/receivables/:id/receive', requirePermission('finance.receiv
   const amount = Number(req.body?.amount);
   const method = typeof req.body?.method === 'string' ? req.body.method : '银行转账';
   const remark = typeof req.body?.remark === 'string' ? req.body.remark : undefined;
+  const items = Array.isArray(req.body?.items)
+    ? req.body.items
+        .map((item) => ({
+          salesOrderItemId: typeof item?.salesOrderItemId === 'string' ? item.salesOrderItemId : '',
+          amount: Number(item?.amount),
+        }))
+        .filter((item) => item.salesOrderItemId)
+    : undefined;
 
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return fail(res, 400, 'amount must be a positive number');
+  if ((!items || items.length === 0) && (!Number.isFinite(amount) || amount <= 0)) {
+    return fail(res, 400, 'amount or items must contain a positive value');
   }
 
   try {
-    const receivable = receiveReceivable(req.params.id, amount, method, remark);
+    const receivable = receiveReceivable(req.params.id, {
+      amount: Number.isFinite(amount) && amount > 0 ? amount : undefined,
+      method,
+      remark,
+      items,
+    });
     return ok(res, receivable, '收款已登记。');
   } catch (error) {
     return fail(res, 400, error instanceof Error ? error.message : 'Receive receivable failed');

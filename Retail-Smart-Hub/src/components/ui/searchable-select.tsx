@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown, Search, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -27,6 +28,45 @@ function normalizeSearchText(value: string) {
   return value.trim().toLowerCase();
 }
 
+function useStableDropdownPosition(
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  isOpen: boolean,
+) {
+  const [style, setStyle] = useState<CSSProperties | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setStyle(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const container = containerRef.current;
+      if (!container) {
+        return;
+      }
+      const rect = container.getBoundingClientRect();
+      setStyle({
+        position: 'fixed',
+        top: rect.bottom + 8,
+        left: rect.left,
+        width: rect.width,
+        zIndex: 9999,
+      });
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [containerRef, isOpen]);
+
+  return style;
+}
+
 export function SearchableSelect({
   value,
   options,
@@ -40,9 +80,11 @@ export function SearchableSelect({
   inputClassName,
 }: SearchableSelectProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const dropdownStyle = useStableDropdownPosition(containerRef, isOpen);
 
   const selectedOption = useMemo(
     () => options.find((option) => option.value === value) || null,
@@ -57,7 +99,13 @@ export function SearchableSelect({
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(target) &&
+        dropdownRef.current &&
+        !dropdownRef.current.contains(target)
+      ) {
         setIsOpen(false);
       }
     };
@@ -174,41 +222,48 @@ export function SearchableSelect({
         </button>
       </div>
 
-      {isOpen ? (
-        <div className="absolute z-50 mt-2 max-h-64 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
-          <div className="max-h-64 overflow-auto py-1">
-            {filteredOptions.length === 0 ? (
-              <div className="px-3 py-2.5 text-sm text-gray-500">{emptyText}</div>
-            ) : (
-              filteredOptions.map((option) => {
-                const isSelected = option.value === value;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    disabled={option.disabled}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => handleSelect(option.value)}
-                    className={cn(
-                      'flex w-full flex-col items-start gap-0.5 px-3 py-2.5 text-left text-sm transition-colors',
-                      option.disabled
-                        ? 'cursor-not-allowed text-gray-300'
-                        : isSelected
-                          ? 'bg-blue-50 text-blue-700'
-                          : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900',
-                    )}
-                  >
-                    <span className="font-medium">{option.label}</span>
-                    {option.description ? (
-                      <span className="text-xs text-gray-500">{option.description}</span>
-                    ) : null}
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-      ) : null}
+      {isOpen && dropdownStyle && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              ref={dropdownRef}
+      style={dropdownStyle}
+              className="max-h-64 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl"
+            >
+              <div className="max-h-64 overflow-auto py-1">
+                {filteredOptions.length === 0 ? (
+                  <div className="px-3 py-2.5 text-sm text-gray-500">{emptyText}</div>
+                ) : (
+                  filteredOptions.map((option) => {
+                    const isSelected = option.value === value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        disabled={option.disabled}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => handleSelect(option.value)}
+                        className={cn(
+                          'flex w-full flex-col items-start gap-0.5 px-3 py-2.5 text-left text-sm transition-colors',
+                          option.disabled
+                            ? 'cursor-not-allowed text-gray-300'
+                            : isSelected
+                              ? 'bg-blue-50 text-blue-700'
+                              : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900',
+                        )}
+                      >
+                        <span className="font-medium">{option.label}</span>
+                        {option.description ? (
+                          <span className="text-xs text-gray-500">{option.description}</span>
+                        ) : null}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

@@ -1,12 +1,13 @@
 import { formatCurrency } from '@/lib/format';
 import type { DocumentPreviewRecord } from '@/types/documents';
-import type { ReceiptRecord, ReceivableDetailRecord } from '@/types/finance';
+import type { ArrivalDetailRecord } from '@/types/arrival';
+import type { PayableDetailRecord, PaymentRecord, ReceiptRecord, ReceivableDetailRecord } from '@/types/finance';
 import type { InboundDetailRecord } from '@/types/inbound';
 import type { OrderDetailRecord } from '@/types/orders';
 import type { ProcurementOrderDetail } from '@/types/procurement';
 import type { ShippingDetailRecord } from '@/types/shipping';
 
-const DEFAULT_DOCUMENT_FOOTER = 'Retail Smart Hub · 系统单据预览';
+const DEFAULT_DOCUMENT_FOOTER = 'Retail Smart Hub 单据预览';
 
 function formatDateTime(value?: string) {
   if (!value) {
@@ -52,16 +53,16 @@ export function buildProcurementDocument(detail: ProcurementOrderDetail): Docume
       { label: '创建日期', value: formatDateTime(detail.createDate) },
       { label: '预计到货', value: formatDateTime(detail.expectedDate) },
       { label: '单据状态', value: detail.status, emphasize: true },
-      { label: '来源', value: detail.source },
+      { label: '来源', value: detail.source || '-' },
     ],
     partyFields: [{ label: '供应商', value: detail.supplier, emphasize: true }],
     columns: [
-      { key: 'sku', label: 'SKU', width: '17%' },
-      { key: 'productName', label: '商品名称', width: '29%' },
+      { key: 'sku', label: 'SKU', width: '16%' },
+      { key: 'productName', label: '商品名称', width: '32%' },
       { key: 'orderedQty', label: '采购数量', align: 'right', width: '12%' },
-      { key: 'arrivedQty', label: '到货数量', align: 'right', width: '12%' },
-      { key: 'unitCost', label: '采购单价', align: 'right', width: '15%' },
-      { key: 'lineAmount', label: '行金额', align: 'right', width: '15%' },
+      { key: 'arrivedQty', label: '已到数量', align: 'right', width: '12%' },
+      { key: 'unitCost', label: '采购单价', align: 'right', width: '14%' },
+      { key: 'lineAmount', label: '金额', align: 'right', width: '14%' },
     ],
     rows: detail.items.map((item) => ({
       id: item.id,
@@ -76,7 +77,7 @@ export function buildProcurementDocument(detail: ProcurementOrderDetail): Docume
     })),
     summaryFields: [
       { label: '采购总金额', value: detail.amount, emphasize: true },
-      { label: '商品总件数', value: `${detail.itemCount} 件` },
+      { label: '商品行数', value: `${detail.itemCount}` },
     ],
     remark: detail.remark,
     footerNote: DEFAULT_DOCUMENT_FOOTER,
@@ -94,22 +95,22 @@ export function buildOrderDocument(detail: OrderDetailRecord): DocumentPreviewRe
       { label: '下单日期', value: formatDateTime(detail.orderDate) },
       { label: '创建时间', value: formatDateTime(detail.createdAt) },
       { label: '期望交付', value: formatDateTime(detail.expectedDeliveryDate) },
-      { label: '库存状态', value: detail.stockStatus },
+      { label: '库存状态', value: detail.stockStatus || '-' },
     ],
     partyFields: [
-      { label: '客户 / 门店', value: detail.customerName, emphasize: true },
-      { label: '订单渠道', value: detail.orderChannel },
+      { label: '客户', value: detail.customerName, emphasize: true },
+      { label: '订单渠道', value: detail.orderChannel || '-' },
     ],
     referenceFields: [
       { label: '发货单号', value: detail.shipping?.deliveryId || '-' },
       { label: '应收单号', value: detail.receivable?.receivableId || '-' },
     ],
     columns: [
-      { key: 'sku', label: 'SKU', width: '18%' },
+      { key: 'sku', label: 'SKU', width: '16%' },
       { key: 'productName', label: '商品名称', width: '34%' },
       { key: 'quantity', label: '数量', align: 'right', width: '12%' },
       { key: 'unitPrice', label: '销售单价', align: 'right', width: '18%' },
-      { key: 'lineAmount', label: '行金额', align: 'right', width: '18%' },
+      { key: 'lineAmount', label: '金额', align: 'right', width: '20%' },
     ],
     rows: detail.items.map((item) => ({
       id: item.id,
@@ -123,9 +124,54 @@ export function buildOrderDocument(detail: OrderDetailRecord): DocumentPreviewRe
     })),
     summaryFields: [
       { label: '订单总金额', value: formatCurrency(detail.totalAmount), emphasize: true },
-      { label: '商品总件数', value: `${detail.itemCount} 件` },
+      { label: '商品总数', value: `${detail.itemCount}` },
     ],
     remark: detail.remark,
+    footerNote: DEFAULT_DOCUMENT_FOOTER,
+  };
+}
+
+export function buildArrivalDocument(detail: ArrivalDetailRecord): DocumentPreviewRecord {
+  const totalQualifiedQuantity = detail.items.reduce((sum, item) => sum + item.qualifiedQty, 0);
+  const totalDefectQuantity = detail.items.reduce((sum, item) => sum + item.defectQty, 0);
+
+  return {
+    id: detail.id,
+    type: 'arrival',
+    title: '到货验收单',
+    documentNo: detail.id,
+    status: detail.status,
+    headerFields: [
+      { label: '到货时间', value: formatDateTime(detail.arrivedAt) },
+      { label: '验收状态', value: detail.status, emphasize: true },
+    ],
+    partyFields: [{ label: '供应商', value: detail.supplier, emphasize: true }],
+    referenceFields: detail.sourcePurchaseOrderIds && detail.sourcePurchaseOrderIds.length > 1
+      ? [{ label: '关联采购单', value: detail.sourcePurchaseOrderIds.join(' / ') }]
+      : [{ label: '采购单号', value: detail.poId }],
+    columns: [
+      { key: 'sku', label: 'SKU', width: '16%' },
+      { key: 'productName', label: '商品名称', width: '34%' },
+      { key: 'expectedQty', label: '应到', align: 'right', width: '12%' },
+      { key: 'arrivedQty', label: '实到', align: 'right', width: '12%' },
+      { key: 'qualifiedQty', label: '合格', align: 'right', width: '12%' },
+      { key: 'defectQty', label: '异常', align: 'right', width: '12%' },
+    ],
+    rows: detail.items.map((item) => ({
+      id: item.id,
+      values: {
+        sku: item.sku,
+        productName: item.productName,
+        expectedQty: formatQuantity(item.expectedQty),
+        arrivedQty: formatQuantity(item.arrivedQty),
+        qualifiedQty: formatQuantity(item.qualifiedQty),
+        defectQty: formatQuantity(item.defectQty),
+      },
+    })),
+    summaryFields: [
+      { label: '合格总数', value: `${totalQualifiedQuantity}`, emphasize: true },
+      { label: '异常总数', value: `${totalDefectQuantity}` },
+    ],
     footerNote: DEFAULT_DOCUMENT_FOOTER,
   };
 }
@@ -146,15 +192,17 @@ export function buildInboundDocument(detail: InboundDetailRecord): DocumentPrevi
     ],
     partyFields: [
       { label: '供应商', value: detail.supplier, emphasize: true },
-      { label: '仓库 / 库位', value: detail.warehouse },
+      { label: '仓库', value: detail.warehouse },
     ],
     referenceFields: [
-      { label: '收货单号', value: detail.rcvId },
-      { label: '采购单号', value: detail.poId },
+      { label: '验收单号', value: detail.rcvId },
+      ...(detail.sourcePurchaseOrderIds && detail.sourcePurchaseOrderIds.length > 1
+        ? [{ label: '关联采购单', value: detail.sourcePurchaseOrderIds.join(' / ') }]
+        : [{ label: '采购单号', value: detail.poId }]),
     ],
     columns: [
-      { key: 'sku', label: 'SKU', width: '16%' },
-      { key: 'productName', label: '商品名称', width: '28%' },
+      { key: 'sku', label: 'SKU', width: '15%' },
+      { key: 'productName', label: '商品名称', width: '29%' },
       { key: 'qualifiedQty', label: '合格数量', align: 'right', width: '12%' },
       { key: 'inboundQty', label: '入库数量', align: 'right', width: '12%' },
       { key: 'shelfCode', label: '入库货架', width: '16%' },
@@ -172,8 +220,8 @@ export function buildInboundDocument(detail: InboundDetailRecord): DocumentPrevi
       },
     })),
     summaryFields: [
-      { label: '合格总数量', value: `${totalQualifiedQuantity} 件` },
-      { label: '入库总数量', value: `${totalInboundQuantity} 件`, emphasize: true },
+      { label: '合格总数', value: `${totalQualifiedQuantity}` },
+      { label: '入库总数', value: `${totalInboundQuantity}`, emphasize: true },
     ],
     footerNote: DEFAULT_DOCUMENT_FOOTER,
   };
@@ -196,25 +244,25 @@ export function buildShippingDocument(detail: ShippingDetailRecord): DocumentPre
       { label: '库存状态', value: detail.stockStatus },
     ],
     partyFields: [
-      { label: '客户 / 门店', value: detail.customer, emphasize: true },
-      { label: '订单渠道', value: detail.orderChannel },
+      { label: '客户', value: detail.customer, emphasize: true },
+      { label: '订单渠道', value: detail.orderChannel || '-' },
     ],
     referenceFields: [
       { label: '关联订单', value: hasMultipleOrders ? detail.orderIds.join(' / ') : detail.orderId },
-      { label: '单据范围', value: detail.documentScope },
+      { label: '发货范围', value: detail.documentScope },
       { label: '物流公司', value: detail.courier || '-' },
       { label: '运单号', value: detail.trackingNo || '-' },
     ],
     columns: hasMultipleOrders
       ? [
-          { key: 'orderId', label: '订单号', width: '24%' },
-          { key: 'sku', label: 'SKU', width: '20%' },
-          { key: 'productName', label: '商品名称', width: '40%' },
+          { key: 'orderId', label: '订单号', width: '22%' },
+          { key: 'sku', label: 'SKU', width: '18%' },
+          { key: 'productName', label: '商品名称', width: '44%' },
           { key: 'quantity', label: '出库数量', align: 'right', width: '16%' },
         ]
       : [
-          { key: 'sku', label: 'SKU', width: '25%' },
-          { key: 'productName', label: '商品名称', width: '55%' },
+          { key: 'sku', label: 'SKU', width: '24%' },
+          { key: 'productName', label: '商品名称', width: '56%' },
           { key: 'quantity', label: '出库数量', align: 'right', width: '20%' },
         ],
     rows: detail.itemsDetail.map((item) => ({
@@ -226,7 +274,7 @@ export function buildShippingDocument(detail: ShippingDetailRecord): DocumentPre
         quantity: formatQuantity(item.quantity),
       },
     })),
-    summaryFields: [{ label: '出库总数量', value: `${totalQuantity} 件`, emphasize: true }],
+    summaryFields: [{ label: '出库总数', value: `${totalQuantity}`, emphasize: true }],
     remark: detail.remark,
     footerNote: DEFAULT_DOCUMENT_FOOTER,
   };
@@ -241,7 +289,7 @@ export function buildReceivableDocument(detail: ReceivableDetailRecord): Documen
     status: detail.status,
     headerFields: [
       { label: '关联订单', value: detail.orderId, emphasize: true },
-      { label: '订单渠道', value: detail.orderChannel },
+      { label: '订单渠道', value: detail.orderChannel || '-' },
       { label: '到期日期', value: formatDateTime(detail.dueDate) },
       { label: '账款状态', value: detail.status, emphasize: true },
     ],
@@ -258,7 +306,7 @@ export function buildReceivableDocument(detail: ReceivableDetailRecord): Documen
     ],
     summaryFields: [
       { label: '待收金额', value: formatCurrency(detail.remainingAmount), emphasize: true },
-      { label: '收款笔数', value: `${detail.records.length} 笔` },
+      { label: '收款笔数', value: `${detail.records.length}` },
     ],
     remark: detail.remark,
     footerNote: DEFAULT_DOCUMENT_FOOTER,
@@ -266,6 +314,9 @@ export function buildReceivableDocument(detail: ReceivableDetailRecord): Documen
 }
 
 export function buildReceiptDocument(detail: ReceivableDetailRecord, record: ReceiptRecord): DocumentPreviewRecord {
+  const detailItemById = new Map(detail.items.map((item) => [item.id, item]));
+  const hasReceiptItems = record.items.length > 0;
+
   return {
     id: record.id,
     type: 'receipt',
@@ -280,21 +331,45 @@ export function buildReceiptDocument(detail: ReceivableDetailRecord, record: Rec
     ],
     partyFields: [{ label: '客户名称', value: detail.customerName, emphasize: true }],
     referenceFields: [
-      { label: '订单渠道', value: detail.orderChannel },
-      { label: '单据状态', value: detail.status },
+      { label: '订单渠道', value: detail.orderChannel || '-' },
+      { label: '应收状态', value: detail.status },
     ],
-    columns: [
-      { key: 'metric', label: '项目', width: '45%' },
-      { key: 'value', label: '金额 / 信息', align: 'right', width: '55%' },
-    ],
-    rows: [
-      { id: `${record.id}-amount`, values: { metric: '本次收款金额', value: formatCurrency(record.amount) } },
-      { id: `${record.id}-paid`, values: { metric: '累计已收金额', value: formatCurrency(detail.amountPaid) } },
-      { id: `${record.id}-remaining`, values: { metric: '剩余待收金额', value: formatCurrency(detail.remainingAmount) } },
-      { id: `${record.id}-method`, values: { metric: '备注', value: record.remark || '-' } },
-    ],
+    columns: hasReceiptItems
+      ? [
+          { key: 'sku', label: 'SKU', width: '16%' },
+          { key: 'productName', label: '商品名称', width: '30%' },
+          { key: 'lineAmount', label: '订单应收', align: 'right', width: '18%' },
+          { key: 'receivedAmount', label: '累计已收', align: 'right', width: '18%' },
+          { key: 'currentAmount', label: '本次收款', align: 'right', width: '18%' },
+        ]
+      : [
+          { key: 'metric', label: '项目', width: '45%' },
+          { key: 'value', label: '金额 / 信息', align: 'right', width: '55%' },
+        ],
+    rows: hasReceiptItems
+      ? record.items.map((item) => {
+          const detailItem = detailItemById.get(item.salesOrderItemId);
+          return {
+            id: item.id,
+            values: {
+              sku: item.sku,
+              productName: item.productName,
+              lineAmount: formatCurrency(detailItem?.lineAmount || item.amount),
+              receivedAmount: formatCurrency(detailItem?.receivedAmount || item.amount),
+              currentAmount: formatCurrency(item.amount),
+            },
+          };
+        })
+      : [
+          { id: `${record.id}-amount`, values: { metric: '本次收款金额', value: formatCurrency(record.amount) } },
+          { id: `${record.id}-paid`, values: { metric: '累计已收金额', value: formatCurrency(detail.amountPaid) } },
+          { id: `${record.id}-remaining`, values: { metric: '剩余待收金额', value: formatCurrency(detail.remainingAmount) } },
+          { id: `${record.id}-remark`, values: { metric: '备注', value: record.remark || '-' } },
+        ],
     summaryFields: [{ label: '本次收款', value: formatCurrency(record.amount), emphasize: true }],
     remark: record.remark,
     footerNote: DEFAULT_DOCUMENT_FOOTER,
   };
 }
+
+

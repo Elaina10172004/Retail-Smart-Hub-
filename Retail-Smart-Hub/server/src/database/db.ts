@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite';
 import { runAuthSecurityMigrations, runSalesOrderBusinessMigrations } from './migrations/core.migrations';
@@ -16,6 +16,7 @@ interface RunResult {
 class StatementWrapper<T = unknown> {
   constructor(private readonly statement: StatementSync) {}
 
+  // 统一封装 SQLite 语句结果，避免上层直接依赖底层驱动对象。
   run(...params: unknown[]) {
     const result = this.statement.run(...(params as SQLInputValue[]));
     return {
@@ -41,10 +42,12 @@ class DatabaseWrapper {
     this.database = new DatabaseSync(filename);
   }
 
+  // 这里直接暴露 exec，供建表、迁移和初始化脚本使用。
   exec(sql: string) {
     this.database.exec(sql);
   }
 
+  // 只允许调用方传入 PRAGMA 片段，减少散落的数据库配置代码。
   pragma(statement: string) {
     this.database.exec(`PRAGMA ${statement}`);
   }
@@ -53,6 +56,7 @@ class DatabaseWrapper {
     return new StatementWrapper<T>(this.database.prepare(sql));
   }
 
+  // 使用 SAVEPOINT 包裹事务，便于在同一连接里支持嵌套写操作。
   transaction<TArgs extends unknown[], TResult>(fn: (...args: TArgs) => TResult) {
     return (...args: TArgs) => {
       const savepoint = `ai_txn_${this.savepointCounter += 1}`;
@@ -78,29 +82,61 @@ class DatabaseWrapper {
 const configuredDataDir = process.env.RETAIL_SMART_HUB_DATA_DIR?.trim();
 export const databaseDir = configuredDataDir ? path.resolve(configuredDataDir) : path.resolve(process.cwd(), 'database');
 export const databasePath = path.join(databaseDir, 'retail-smart-hub.db');
-const bootstrapAdminPasswordPath = path.join(databaseDir, 'bootstrap-admin-password.txt');
+const DEFAULT_ADMIN_USERNAME = 'admin';
+const DEFAULT_ADMIN_PASSWORD = 'admin';
 
 fs.mkdirSync(databaseDir, { recursive: true });
 
 export const db = new DatabaseWrapper(databasePath);
+// WAL 提升并发读写稳定性，foreign_keys 确保外键约束始终生效。
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-function persistBootstrapAdminPassword(password: string) {
-  const issuedAt = new Date().toISOString();
-  const payload = [
-    'Retail Smart Hub bootstrap administrator password',
-    `issuedAt=${issuedAt}`,
-    'username=admin',
-    `temporaryPassword=${password}`,
-    'mustChangePassword=true',
-    'deleteThisFileAfterFirstLogin=true',
-    '',
-  ].join('\n');
-  fs.writeFileSync(bootstrapAdminPasswordPath, payload, 'utf8');
+function repairDefaultAdminCredentials() {
+  const adminRow = db.prepare<{ id: string }>('SELECT id FROM users WHERE username = ?').get(DEFAULT_ADMIN_USERNAME);
+  if (!adminRow) {
+    return;
+  }
+
+  const passwordUpdatedAt = `${currentDateString()}T00:00:00.000Z`;
+  const passwordHash = hashPassword(DEFAULT_ADMIN_PASSWORD);
+
+  db.prepare(`
+    INSERT INTO user_credentials (
+      user_id, password, password_updated_at, must_change_password, temporary_password_issued_at
+    ) VALUES (?, ?, ?, 0, NULL)
+    ON CONFLICT(user_id) DO UPDATE SET
+      password = excluded.password,
+      password_updated_at = excluded.password_updated_at,
+      must_change_password = 0,
+      temporary_password_issued_at = NULL
+  `).run(adminRow.id, passwordHash, passwordUpdatedAt);
+
+  db.prepare(`
+    INSERT INTO auth_security_state (
+      user_id, failed_attempt_count, last_failed_at, locked_until, password_updated_at
+    ) VALUES (?, 0, NULL, NULL, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      failed_attempt_count = 0,
+      last_failed_at = NULL,
+      locked_until = NULL,
+    password_updated_at = excluded.password_updated_at
+  `).run(adminRow.id, passwordUpdatedAt);
 }
 
+function clearAllSecurityLocks() {
+  db.prepare(`
+    UPDATE auth_security_state
+      SET failed_attempt_count = 0,
+          last_failed_at = NULL,
+          locked_until = NULL
+  `).run();
+}
+
+// 首次启动时会把管理员临时密码写入本地文件，方便首次登录后立刻改密。
+
 function initializeDatabase() {
+  // 所有核心表结构、补丁迁移和演示数据入口都从这里串起来。
   db.exec(`
     CREATE TABLE IF NOT EXISTS suppliers (
       id TEXT PRIMARY KEY,
@@ -378,6 +414,19 @@ function initializeDatabase() {
       FOREIGN KEY (receivable_id) REFERENCES receivables(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS receipt_record_items (
+      id TEXT PRIMARY KEY,
+      receipt_record_id TEXT NOT NULL,
+      sales_order_item_id TEXT NOT NULL,
+      product_id TEXT,
+      sku TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      FOREIGN KEY (receipt_record_id) REFERENCES receipt_records(id) ON DELETE CASCADE,
+      FOREIGN KEY (sales_order_item_id) REFERENCES sales_order_items(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+
     CREATE TABLE IF NOT EXISTS payables (
       id TEXT PRIMARY KEY,
       purchase_order_id TEXT NOT NULL UNIQUE,
@@ -478,6 +527,7 @@ function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS customers (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
+      customer_type TEXT NOT NULL DEFAULT 'reseller',
       channel_preference TEXT,
       contact_name TEXT,
       phone TEXT,
@@ -516,6 +566,34 @@ function initializeDatabase() {
       execution_result TEXT,
       undone_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS ai_interruption_checkpoints (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      tenant_id TEXT,
+      kind TEXT NOT NULL DEFAULT 'clarification',
+      status TEXT NOT NULL DEFAULT 'awaiting_user',
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      options_json TEXT NOT NULL,
+      request_prompt TEXT NOT NULL,
+      request_attachments_json TEXT NOT NULL DEFAULT '[]',
+      request_history_json TEXT NOT NULL DEFAULT '[]',
+      assistant_reply TEXT NOT NULL,
+      assistant_tool_calls_json TEXT NOT NULL DEFAULT '[]',
+      assistant_pending_action_json TEXT,
+      parent_interruption_id TEXT,
+      resume_option_id TEXT,
+      resume_prompt TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resumed_at TEXT,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_interruption_checkpoints_conversation_status
+      ON ai_interruption_checkpoints(conversation_id, user_id, status, created_at DESC);
   `);
 
   ensureMasterDataStatusColumns();
@@ -524,6 +602,7 @@ function initializeDatabase() {
   ensureAiPendingActionSchema();
   ensureSalesOrderTimeSchema();
   ensureSalesOrderBusinessSchema();
+  ensureReceiptRecordItemData();
 
   const existingProducts = getTableCount(db, 'products');
   if (existingProducts > 0) {
@@ -534,6 +613,8 @@ function initializeDatabase() {
     ensureAccessControlData();
     ensureAuthSecurityData();
     ensureCustomerProfiles();
+    ensureReceiptRecordItemData();
+    ensureDemoBusinessData();
     return;
   }
 
@@ -546,6 +627,8 @@ function initializeDatabase() {
   ensureAccessControlData();
   ensureAuthSecurityData();
   ensureCustomerProfiles();
+  ensureReceiptRecordItemData();
+  ensureDemoBusinessData();
 }
 
 function ensureColumnExists(tableName: string, columnName: string, definition: string) {
@@ -554,13 +637,16 @@ function ensureColumnExists(tableName: string, columnName: string, definition: s
 
 function ensureMasterDataStatusColumns() {
   ensureColumnExists('products', 'status', "status TEXT NOT NULL DEFAULT 'active'");
+  ensureColumnExists('customers', 'customer_type', "customer_type TEXT NOT NULL DEFAULT 'reseller'");
   db.exec("UPDATE products SET status = 'active' WHERE status IS NULL OR TRIM(status) = ''");
   db.exec("UPDATE suppliers SET status = 'active' WHERE status IS NULL OR TRIM(status) = ''");
+  db.exec("UPDATE customers SET customer_type = 'reseller' WHERE customer_type IS NULL OR TRIM(customer_type) = ''");
 }
 
 function ensureInboundShelfSchema() {
   ensureColumnExists('receiving_note_items', 'inbound_qty', 'inbound_qty INTEGER NOT NULL DEFAULT 0');
   ensureColumnExists('receiving_note_items', 'shelf_id', 'shelf_id TEXT');
+  // 旧数据默认把“入库数量”补成已验收数量，避免草稿为 0 导致流程卡住。
   db.exec(`
     UPDATE receiving_note_items
     SET inbound_qty = qualified_qty
@@ -569,6 +655,7 @@ function ensureInboundShelfSchema() {
 }
 
 function ensureWarehouseShelfData() {
+  // 货架属于基础仓储数据，先补齐货架，再按现有库存自动分配默认库位。
   const insertShelf = db.prepare(
     'INSERT OR IGNORE INTO warehouse_shelves (id, warehouse_id, shelf_code, shelf_name, tags, capacity, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
   );
@@ -583,10 +670,11 @@ function ensureWarehouseShelfData() {
     ['SHELF-WH-002-B03', 'WH-002', 'B03', '纸品大件货架', '纸品,大件,周转', 340, 30],
   ].forEach((row) => insertShelf.run(...row));
 
-  const shelfStockCount = getTableCount(db, 'inventory_shelf_stock');
-  if (shelfStockCount > 0) {
-    return;
-  }
+  db.exec(`
+    UPDATE warehouse_shelves
+    SET capacity = capacity * 10
+    WHERE capacity > 0 AND capacity < 1000
+  `);
 
   const inventoryRows = db.prepare<{
     productId: string;
@@ -603,7 +691,11 @@ function ensureWarehouseShelfData() {
       p.category as category
     FROM inventory i
     JOIN products p ON p.id = i.product_id
+    LEFT JOIN inventory_shelf_stock iss
+      ON iss.product_id = i.product_id
+      AND iss.warehouse_id = i.warehouse_id
     WHERE i.current_stock > 0
+      AND iss.id IS NULL
     ORDER BY p.sku ASC
   `).all();
 
@@ -648,6 +740,7 @@ function ensureWarehouseShelfData() {
 }
 
 function ensureAuthSecuritySchema() {
+  // 认证安全相关表结构由独立迁移维护，这里只触发执行。
   runAuthSecurityMigrations({
     ensureColumnExists,
     exec: (sql) => db.exec(sql),
@@ -663,6 +756,7 @@ function ensureAiPendingActionSchema() {
 
 function ensureSalesOrderTimeSchema() {
   ensureColumnExists('sales_orders', 'created_at', 'created_at TEXT');
+  // 早期订单可能只有 order_date，这里补成可追踪的创建时间。
   db.exec(`
     UPDATE sales_orders
     SET created_at = CASE
@@ -674,6 +768,7 @@ function ensureSalesOrderTimeSchema() {
 }
 
 function ensureSalesOrderBusinessSchema() {
+  // 销售单业务字段的兼容迁移集中放到专门的迁移脚本里。
   runSalesOrderBusinessMigrations({
     ensureColumnExists,
     exec: (sql) => db.exec(sql),
@@ -819,7 +914,7 @@ export function nextMasterDataId(tableName: string, prefix: string) {
     throw new Error('Master data id prefix is required');
   }
 
-  // Avoid COUNT(*)+1 collisions after deletes by using the maximum numeric suffix instead.
+  // 不用 COUNT(*) + 1，避免删除记录后重复复用旧编号。
   const like = `${normalizedPrefix}-%`;
   const rows = db.prepare<{ id: string }>(`SELECT id FROM ${tableName} WHERE id LIKE ?`).all(like);
   const matcher = new RegExp(`^${escapeRegExp(normalizedPrefix)}-(\\d+)$`);
@@ -873,6 +968,7 @@ export function appendInventoryMovement(payload: InventoryMovementPayload) {
 }
 
 function ensureDeliveryNotes() {
+  // 历史销售单如果缺少发货单，这里按当前订单状态补齐。
   const missingOrders = db.prepare<MissingDeliveryOrderRow>(`
     SELECT
       so.id,
@@ -917,6 +1013,7 @@ function ensureDeliveryNotes() {
 }
 
 export function createReceivableForSalesOrder(salesOrderId: string, options?: CreateReceivableOptions) {
+  // 每张销售单只生成一条应收记录，避免重复插入。
   const existing = db.prepare<{ id: string }>('SELECT id FROM receivables WHERE sales_order_id = ?').get(salesOrderId);
   if (existing?.id) {
     return existing.id;
@@ -987,6 +1084,7 @@ export function createReceivableForSalesOrder(salesOrderId: string, options?: Cr
 }
 
 export function createPayableForPurchaseOrder(purchaseOrderId: string, options?: CreatePayableOptions) {
+  // 每张采购单只生成一条应付记录，历史数据也通过这里补齐。
   const existing = db.prepare<{ id: string }>('SELECT id FROM payables WHERE purchase_order_id = ?').get(purchaseOrderId);
   if (existing?.id) {
     return existing.id;
@@ -1023,7 +1121,7 @@ export function createPayableForPurchaseOrder(purchaseOrderId: string, options?:
   const amountPaid =
     seedByStatus && order.status === '已完成'
       ? order.amount
-      : seedByStatus && order.status === '部分到货'
+      : seedByStatus && (order.status === '到货' || order.status === '部分到货')
         ? roundCurrency(order.amount * 0.5)
         : 0;
   const lastPaidAt = amountPaid > 0 ? addDays(order.createdAt, 2) : null;
@@ -1056,6 +1154,485 @@ export function createPayableForPurchaseOrder(purchaseOrderId: string, options?:
   }
 
   return payableId;
+}
+
+interface ReceiptSeedRow {
+  id: string;
+  receivableId: string;
+  amount: number;
+}
+
+interface ReceiptSeedItemRow {
+  receiptRecordId: string;
+  salesOrderItemId: string;
+  amount: number;
+}
+
+interface ReceivableSeedLineRow {
+  receivableId: string;
+  salesOrderItemId: string;
+  productId: string | null;
+  sku: string;
+  productName: string;
+  lineAmount: number;
+}
+
+function ensureReceiptRecordItemData() {
+  // 旧版本收款记录没有商品行明细，这里按订单行回填成可打印结构。
+  const missingReceiptCount =
+    db.prepare<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM receipt_records rr
+      LEFT JOIN receipt_record_items rri ON rri.receipt_record_id = rr.id
+      WHERE rri.id IS NULL
+    `).get()?.count ?? 0;
+
+  if (missingReceiptCount <= 0) {
+    return;
+  }
+
+  const receipts = db.prepare<ReceiptSeedRow>(`
+    SELECT
+      id,
+      receivable_id as receivableId,
+      amount
+    FROM receipt_records
+    ORDER BY receivable_id ASC, received_at ASC, id ASC
+  `).all();
+
+  const existingItems = db.prepare<ReceiptSeedItemRow>(`
+    SELECT
+      receipt_record_id as receiptRecordId,
+      sales_order_item_id as salesOrderItemId,
+      amount
+    FROM receipt_record_items
+  `).all();
+
+  const lineRows = db.prepare<ReceivableSeedLineRow>(`
+    SELECT
+      r.id as receivableId,
+      soi.id as salesOrderItemId,
+      soi.product_id as productId,
+      soi.sku,
+      soi.product_name as productName,
+      ROUND(soi.quantity * soi.unit_price, 2) as lineAmount
+    FROM receivables r
+    JOIN sales_orders so ON so.id = r.sales_order_id
+    JOIN sales_order_items soi ON soi.sales_order_id = so.id
+    ORDER BY r.id ASC, soi.id ASC
+  `).all();
+
+  const receiptsByReceivableId = new Map<string, ReceiptSeedRow[]>();
+  receipts.forEach((receipt) => {
+    const list = receiptsByReceivableId.get(receipt.receivableId) || [];
+    list.push(receipt);
+    receiptsByReceivableId.set(receipt.receivableId, list);
+  });
+
+  const existingItemsByReceiptId = new Map<string, ReceiptSeedItemRow[]>();
+  existingItems.forEach((item) => {
+    const list = existingItemsByReceiptId.get(item.receiptRecordId) || [];
+    list.push(item);
+    existingItemsByReceiptId.set(item.receiptRecordId, list);
+  });
+
+  const linesByReceivableId = new Map<string, ReceivableSeedLineRow[]>();
+  lineRows.forEach((item) => {
+    const list = linesByReceivableId.get(item.receivableId) || [];
+    list.push(item);
+    linesByReceivableId.set(item.receivableId, list);
+  });
+
+  const insertReceiptItem = db.prepare(
+    `INSERT OR IGNORE INTO receipt_record_items (
+      id, receipt_record_id, sales_order_item_id, product_id, sku, product_name, amount
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const transaction = db.transaction(() => {
+    receiptsByReceivableId.forEach((receivableReceipts, receivableId) => {
+      const lines = (linesByReceivableId.get(receivableId) || []).map((line) => ({
+        ...line,
+        remainingCents: Math.round(line.lineAmount * 100),
+      }));
+      const lineMap = new Map(lines.map((line) => [line.salesOrderItemId, line]));
+
+      receivableReceipts.forEach((receipt) => {
+        const currentItems = existingItemsByReceiptId.get(receipt.id) || [];
+        if (currentItems.length > 0) {
+          currentItems.forEach((item) => {
+            const line = lineMap.get(item.salesOrderItemId);
+            if (!line) {
+              return;
+            }
+            line.remainingCents = Math.max(0, line.remainingCents - Math.round(item.amount * 100));
+          });
+          return;
+        }
+
+        let remainingCents = Math.round(receipt.amount * 100);
+        let lineIndex = 0;
+
+        for (const line of lines) {
+          if (remainingCents <= 0) {
+            break;
+          }
+          if (line.remainingCents <= 0) {
+            continue;
+          }
+
+          const allocatedCents = Math.min(line.remainingCents, remainingCents);
+          if (allocatedCents <= 0) {
+            continue;
+          }
+
+          lineIndex += 1;
+          insertReceiptItem.run(
+            `${receipt.id}-ITEM-${String(lineIndex).padStart(3, '0')}`,
+            receipt.id,
+            line.salesOrderItemId,
+            line.productId,
+            line.sku,
+            line.productName,
+            allocatedCents / 100,
+          );
+
+          line.remainingCents -= allocatedCents;
+          remainingCents -= allocatedCents;
+        }
+
+        if (remainingCents > 0 && lines.length > 0) {
+          const fallbackLine = lines[lines.length - 1];
+          lineIndex += 1;
+          insertReceiptItem.run(
+            `${receipt.id}-ITEM-${String(lineIndex).padStart(3, '0')}`,
+            receipt.id,
+            fallbackLine.salesOrderItemId,
+            fallbackLine.productId,
+            fallbackLine.sku,
+            fallbackLine.productName,
+            remainingCents / 100,
+          );
+          fallbackLine.remainingCents = Math.max(0, fallbackLine.remainingCents - remainingCents);
+        }
+      });
+    });
+  });
+
+  transaction();
+}
+
+function ensureDemoBusinessData() {
+  const today = currentDateString();
+  // 演示数据使用一个事务整体写入，避免中途失败留下半套数据。
+  const transaction = db.transaction(() => {
+    const insertProduct = db.prepare(
+      'INSERT OR IGNORE INTO products (id, sku, name, category, unit, status, safe_stock, sale_price, cost_price, preferred_supplier_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertInventory = db.prepare(
+      'INSERT OR IGNORE INTO inventory (id, product_id, warehouse_id, current_stock, reserved_stock) VALUES (?, ?, ?, ?, ?)',
+    );
+    const insertCustomer = db.prepare(
+      'INSERT OR IGNORE INTO customers (id, name, customer_type, channel_preference, contact_name, phone, level, last_order_date, total_orders, total_sales, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertSalesOrder = db.prepare(
+      'INSERT OR IGNORE INTO sales_orders (id, customer_name, order_channel, order_date, expected_delivery_date, status, stock_status, total_amount, item_count, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertSalesOrderItem = db.prepare(
+      'INSERT OR IGNORE INTO sales_order_items (id, sales_order_id, product_id, sku, product_name, quantity, unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertPurchaseOrder = db.prepare(
+      'INSERT OR IGNORE INTO purchase_orders (id, supplier_id, created_at, expected_at, status, source, remark) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertPurchaseOrderItem = db.prepare(
+      'INSERT OR IGNORE INTO purchase_order_items (id, purchase_order_id, product_id, ordered_qty, arrived_qty, unit_cost) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    const insertReceivingNote = db.prepare(
+      'INSERT OR IGNORE INTO receiving_notes (id, purchase_order_id, supplier_id, expected_qty, arrived_qty, qualified_qty, defect_qty, status, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertReceivingNoteItem = db.prepare(
+      'INSERT OR IGNORE INTO receiving_note_items (id, receiving_note_id, purchase_order_item_id, product_id, expected_qty, arrived_qty, qualified_qty, defect_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertInboundOrder = db.prepare(
+      'INSERT OR IGNORE INTO inbound_orders (id, receiving_note_id, warehouse_id, inbound_qty, status, completed_at) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+
+    const productCatalog = {
+      PRD_001: { id: 'PRD-001', sku: 'SKU-1001', name: '维达抽纸 24包', price: 59.9, cost: 38 },
+      PRD_003: { id: 'PRD-003', sku: 'SKU-1003', name: '蓝月亮洗衣液 3kg', price: 79, cost: 48 },
+      PRD_005: { id: 'PRD-005', sku: 'SKU-1005', name: '洁柔卷纸 12卷', price: 45, cost: 29 },
+      PRD_006: { id: 'PRD-006', sku: 'SKU-1006', name: '奥利奥夹心饼干', price: 18, cost: 8 },
+      PRD_007: { id: 'PRD-007', sku: 'SKU-1007', name: '无糖乌龙茶 500ml', price: 52, cost: 31 },
+      PRD_008: { id: 'PRD-008', sku: 'SKU-1008', name: '厨房湿巾 80抽', price: 16.8, cost: 9.5 },
+      PRD_009: { id: 'PRD-009', sku: 'SKU-1009', name: '晨光中性笔 24支装', price: 36, cost: 20 },
+      PRD_010: { id: 'PRD-010', sku: 'SKU-1010', name: '苏打气泡水 330ml', price: 42, cost: 24 },
+    } as const;
+
+    insertProduct.run('PRD-007', 'SKU-1007', '无糖乌龙茶 500ml', '饮料饮品', '箱', 'active', 45, 52, 31, 'SUP-003');
+    insertProduct.run('PRD-008', 'SKU-1008', '厨房湿巾 80抽', '家庭清洁', '包', 'active', 60, 16.8, 9.5, 'SUP-001');
+    insertProduct.run('PRD-009', 'SKU-1009', '晨光中性笔 24支装', '办公用品', '盒', 'active', 35, 36, 20, 'SUP-001');
+    insertProduct.run('PRD-010', 'SKU-1010', '苏打气泡水 330ml', '饮料饮品', '箱', 'active', 40, 42, 24, 'SUP-003');
+
+    insertInventory.run('INV-007', 'PRD-007', 'WH-001', 64, 0);
+    insertInventory.run('INV-008', 'PRD-008', 'WH-001', 110, 0);
+    insertInventory.run('INV-009', 'PRD-009', 'WH-001', 88, 0);
+    insertInventory.run('INV-010', 'PRD-010', 'WH-001', 72, 0);
+
+    insertCustomer.run('CUS-DEMO-SUP-001', '华北联采供应协同', 'supplier', '供应协同', '邱雯', '13800139001', 'B', null, 0, 0, 'active');
+    insertCustomer.run('CUS-DEMO-SUP-002', '京津办公物资供应组', 'supplier', '供应协同', '姜岚', '13800139002', 'B', null, 0, 0, 'active');
+
+    const salesDemo = [
+      {
+        date: addDays(today, -6),
+        sequence: '901',
+        customer: '国贸白领店',
+        channel: '门店补货',
+        status: '已完成',
+        stockStatus: '-',
+        expectedOffset: 1,
+        remark: '演示数据：晨间补货已完成。',
+        items: [
+          { ...productCatalog.PRD_005, quantity: 16, unitPrice: 45 },
+          { ...productCatalog.PRD_006, quantity: 22, unitPrice: 18 },
+        ],
+      },
+      {
+        date: addDays(today, -5),
+        sequence: '902',
+        customer: '望京企业客户',
+        channel: '企业团购',
+        status: '已完成',
+        stockStatus: '-',
+        expectedOffset: 2,
+        remark: '演示数据：月度团购整单签收。',
+        items: [
+          { ...productCatalog.PRD_001, quantity: 18, unitPrice: 59.9 },
+          { ...productCatalog.PRD_009, quantity: 12, unitPrice: 36 },
+        ],
+      },
+      {
+        date: addDays(today, -4),
+        sequence: '903',
+        customer: '朝阳社区店',
+        channel: '门店补货',
+        status: '已发货',
+        stockStatus: '-',
+        expectedOffset: 1,
+        remark: '演示数据：下午波次已出库。',
+        items: [
+          { ...productCatalog.PRD_010, quantity: 10, unitPrice: 42 },
+          { ...productCatalog.PRD_008, quantity: 20, unitPrice: 16.8 },
+        ],
+      },
+      {
+        date: addDays(today, -3),
+        sequence: '904',
+        customer: '线上商城华北仓',
+        channel: '线上商城',
+        status: '已发货',
+        stockStatus: '-',
+        expectedOffset: 2,
+        remark: '演示数据：电商活动订单已交承运。',
+        items: [
+          { ...productCatalog.PRD_007, quantity: 14, unitPrice: 52 },
+          { ...productCatalog.PRD_005, quantity: 12, unitPrice: 45 },
+        ],
+      },
+      {
+        date: addDays(today, -2),
+        sequence: '905',
+        customer: '海淀校园店',
+        channel: '门店补货',
+        status: '待发货',
+        stockStatus: '库存充足',
+        expectedOffset: 1,
+        remark: '演示数据：校园门店晚间补货。',
+        items: [
+          { ...productCatalog.PRD_006, quantity: 28, unitPrice: 18 },
+          { ...productCatalog.PRD_009, quantity: 6, unitPrice: 36 },
+        ],
+      },
+      {
+        date: addDays(today, -1),
+        sequence: '906',
+        customer: '望京企业客户',
+        channel: '企业团购',
+        status: '待发货',
+        stockStatus: '库存充足',
+        expectedOffset: 2,
+        remark: '演示数据：同客户二次补单。',
+        items: [
+          { ...productCatalog.PRD_001, quantity: 10, unitPrice: 59.9 },
+          { ...productCatalog.PRD_007, quantity: 8, unitPrice: 52.5 },
+        ],
+      },
+      {
+        date: today,
+        sequence: '907',
+        customer: '国贸白领店',
+        channel: '门店补货',
+        status: '待发货',
+        stockStatus: '库存充足',
+        expectedOffset: 1,
+        remark: '演示数据：今日早班补货单。',
+        items: [
+          { ...productCatalog.PRD_008, quantity: 18, unitPrice: 16.8 },
+          { ...productCatalog.PRD_010, quantity: 6, unitPrice: 42 },
+        ],
+      },
+      {
+        date: today,
+        sequence: '908',
+        customer: '新媒体直播间',
+        channel: '线上商城',
+        status: '待发货',
+        stockStatus: '部分缺货',
+        expectedOffset: 2,
+        remark: '演示数据：直播补货待补齐库存。',
+        items: [
+          { ...productCatalog.PRD_007, quantity: 24, unitPrice: 52 },
+          { ...productCatalog.PRD_003, quantity: 6, unitPrice: 79 },
+        ],
+      },
+    ];
+
+    salesDemo.forEach((order) => {
+      const orderId = `ORD-${compactDate(order.date)}-${order.sequence}`;
+      const totalAmount = order.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+      const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
+      insertSalesOrder.run(
+        orderId,
+        order.customer,
+        order.channel,
+        order.date,
+        addDays(order.date, order.expectedOffset),
+        order.status,
+        order.stockStatus,
+        Number(totalAmount.toFixed(2)),
+        itemCount,
+        order.remark,
+      );
+
+      order.items.forEach((item, index) => {
+        insertSalesOrderItem.run(
+          `${orderId}-ITEM-${index + 1}`,
+          orderId,
+          item.id,
+          item.sku,
+          item.name,
+          item.quantity,
+          item.unitPrice,
+        );
+      });
+    });
+
+    const purchaseDemo = [
+      {
+        date: addDays(today, -5),
+        sequence: '951',
+        supplierId: 'SUP-003',
+        status: '已完成',
+        source: '系统建议',
+        expectedOffset: 2,
+        remark: '演示数据：饮料波次补货已完成。',
+        item: { ...productCatalog.PRD_010, orderedQty: 180, arrivedQty: 180, unitCost: 24 },
+        receiving: { arrivedQty: 180, qualifiedQty: 178, defectQty: 2, status: '已入库', arrivedOffset: 2, inboundStatus: '已入库' },
+      },
+      {
+        date: addDays(today, -3),
+        sequence: '952',
+        supplierId: 'SUP-001',
+        status: '部分到货',
+        source: '手工创建',
+        expectedOffset: 3,
+        remark: '演示数据：清洁用品分批到货。',
+        item: { ...productCatalog.PRD_008, orderedQty: 220, arrivedQty: 120, unitCost: 9.5 },
+        receiving: { arrivedQty: 120, qualifiedQty: 118, defectQty: 2, status: '部分到货', arrivedOffset: 2, inboundStatus: '待入库' },
+      },
+      {
+        date: addDays(today, -1),
+        sequence: '953',
+        supplierId: 'SUP-002',
+        status: '采购中',
+        source: '系统建议',
+        expectedOffset: 3,
+        remark: '演示数据：纸品促销备货途中。',
+        item: { ...productCatalog.PRD_001, orderedQty: 160, arrivedQty: 0, unitCost: 38 },
+      },
+      {
+        date: today,
+        sequence: '954',
+        supplierId: 'SUP-001',
+        status: '待审核',
+        source: '手工创建',
+        expectedOffset: 4,
+        remark: '演示数据：办公用品补货待审核。',
+        item: { ...productCatalog.PRD_009, orderedQty: 90, arrivedQty: 0, unitCost: 20 },
+      },
+    ];
+
+    purchaseDemo.forEach((order) => {
+      const purchaseOrderId = `PO-${compactDate(order.date)}-${order.sequence}`;
+      const purchaseOrderItemId = `${purchaseOrderId}-ITEM-1`;
+      insertPurchaseOrder.run(
+        purchaseOrderId,
+        order.supplierId,
+        order.date,
+        addDays(order.date, order.expectedOffset),
+        order.status,
+        order.source,
+        order.remark,
+      );
+      insertPurchaseOrderItem.run(
+        purchaseOrderItemId,
+        purchaseOrderId,
+        order.item.id,
+        order.item.orderedQty,
+        order.item.arrivedQty,
+        order.item.unitCost,
+      );
+
+      if (order.receiving) {
+        const receivingId = `RCV-${compactDate(addDays(order.date, order.receiving.arrivedOffset))}-${order.sequence}`;
+        insertReceivingNote.run(
+          receivingId,
+          purchaseOrderId,
+          order.supplierId,
+          order.item.orderedQty,
+          order.receiving.arrivedQty,
+          order.receiving.qualifiedQty,
+          order.receiving.defectQty,
+          order.receiving.status,
+          addDays(order.date, order.receiving.arrivedOffset),
+        );
+        insertReceivingNoteItem.run(
+          `${receivingId}-ITEM-1`,
+          receivingId,
+          purchaseOrderItemId,
+          order.item.id,
+          order.item.orderedQty,
+          order.receiving.arrivedQty,
+          order.receiving.qualifiedQty,
+          order.receiving.defectQty,
+        );
+        insertInboundOrder.run(
+          `INB-${compactDate(addDays(order.date, order.receiving.arrivedOffset))}-${order.sequence}`,
+          receivingId,
+          'WH-001',
+          order.receiving.qualifiedQty,
+          order.receiving.inboundStatus,
+          order.receiving.inboundStatus === '已入库' ? addDays(order.date, order.receiving.arrivedOffset) : null,
+        );
+      }
+    });
+  });
+
+  transaction();
+  ensureFinanceDocuments();
+  ensureReceiptRecordItemData();
+  ensureDeliveryNotes();
+  ensureCustomerProfiles();
+  ensureWarehouseShelfData();
 }
 
 export function ensureFinanceDocuments(): FinanceSyncResult {
@@ -1324,18 +1901,12 @@ export function ensureAccessControlData() {
     seededUserRoles.forEach((row) => insertUserRole.run(...row));
 
     const seededPasswordUpdatedAt = `${currentDateString()}T00:00:00.000Z`;
-    // Bootstrap admin password:
-    // - never a hardcoded constant
-    // - one-time/random on first install (when seeding happens)
-    // - mustChangePassword enforced on first login
-    const configuredBootstrapAdminPassword = process.env.AUTH_BOOTSTRAP_ADMIN_PASSWORD?.trim() || '';
-    const bootstrapAdminPassword = configuredBootstrapAdminPassword || generateTemporaryPassword(18);
     const seededCredentialUsers: Array<{ userId: string; username: string; password: string; mustChangePassword: boolean }> = [
       {
         userId: 'USR-001',
         username: 'admin',
-        password: bootstrapAdminPassword,
-        mustChangePassword: true,
+        password: DEFAULT_ADMIN_PASSWORD,
+        mustChangePassword: false,
       },
     ];
 
@@ -1369,14 +1940,8 @@ export function ensureAccessControlData() {
       });
     }
 
-    // Ensure first-run operator can access the system without shipping a default password.
-    // If AUTH_BOOTSTRAP_ADMIN_PASSWORD is set, the operator already knows it; otherwise we log the generated one-time password once.
-    if (!configuredBootstrapAdminPassword && credentialCount === 0) {
-      persistBootstrapAdminPassword(bootstrapAdminPassword);
-      console.warn(`[auth-bootstrap] admin one-time temporary password: ${bootstrapAdminPassword}`);
-      console.warn('[auth-bootstrap] please login as admin and change the password immediately.');
-      console.warn(`[auth-bootstrap] bootstrap password file: ${bootstrapAdminPasswordPath}`);
-    }
+    clearAllSecurityLocks();
+    repairDefaultAdminCredentials();
   });
 
   transaction();
@@ -1403,12 +1968,12 @@ export function ensureCustomerProfiles() {
   const findCustomer = db.prepare<{ id: string }>('SELECT id FROM customers WHERE name = ?');
   const insertCustomer = db.prepare(
     `INSERT INTO customers (
-      id, name, channel_preference, contact_name, phone, level, last_order_date, total_orders, total_sales, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      id, name, customer_type, channel_preference, contact_name, phone, level, last_order_date, total_orders, total_sales, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const updateCustomer = db.prepare(
     `UPDATE customers
-      SET channel_preference = ?, last_order_date = ?, total_orders = ?, total_sales = ?, level = ?
+      SET customer_type = ?, channel_preference = ?, last_order_date = ?, total_orders = ?, total_sales = ?, level = ?
       WHERE id = ?`
   );
 
@@ -1419,6 +1984,7 @@ export function ensureCustomerProfiles() {
         insertCustomer.run(
           nextMasterDataId('customers', 'CUS'),
           customer.name,
+          'reseller',
           customer.orderChannel,
           null,
           null,
@@ -1432,6 +1998,7 @@ export function ensureCustomerProfiles() {
       }
 
       updateCustomer.run(
+        'reseller',
         customer.orderChannel,
         customer.lastOrderDate,
         customer.totalOrders,
@@ -1453,11 +2020,12 @@ export function upsertCustomerProfile(customerName: string, orderChannel: string
   if (!existing) {
     db.prepare(
       `INSERT INTO customers (
-        id, name, channel_preference, contact_name, phone, level, last_order_date, total_orders, total_sales, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        id, name, customer_type, channel_preference, contact_name, phone, level, last_order_date, total_orders, total_sales, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       nextMasterDataId('customers', 'CUS'),
       customerName,
+      'reseller',
       orderChannel,
       null,
       null,
@@ -1475,9 +2043,10 @@ export function upsertCustomerProfile(customerName: string, orderChannel: string
 
   db.prepare(
     `UPDATE customers
-      SET channel_preference = ?, last_order_date = ?, total_orders = ?, total_sales = ?, level = ?, status = ?
+      SET customer_type = ?, channel_preference = ?, last_order_date = ?, total_orders = ?, total_sales = ?, level = ?, status = ?
       WHERE id = ?`
   ).run(
+    'reseller',
     orderChannel,
     orderDate,
     totalOrders,
@@ -1491,9 +2060,32 @@ export function upsertCustomerProfile(customerName: string, orderChannel: string
 export function nextDocumentId(tableName: string, prefix: string, dateString = currentDateString()) {
   const datePart = compactDate(dateString);
   const like = `${prefix}-${datePart}-%`;
-  const sql = `SELECT COUNT(*) as count FROM ${tableName} WHERE id LIKE ?`;
-  const count = db.prepare<{ count: number }>(sql).get(like)?.count ?? 0;
-  return `${prefix}-${datePart}-${String(count + 1).padStart(3, '0')}`;
+  // 单据号按“前缀 + 日期 + 自增尾号”生成，并扫描现有最大尾号避免撞号。
+  const rows = db.prepare<{ id: string }>(`SELECT id FROM ${tableName} WHERE id LIKE ?`).all(like);
+  const matcher = new RegExp(`^${escapeRegExp(prefix)}-${escapeRegExp(datePart)}-(\\d+)$`);
+  let maxSuffix = 0;
+
+  for (const row of rows) {
+    const candidate = String(row?.id || '').trim();
+    const match = matcher.exec(candidate);
+    if (!match) {
+      continue;
+    }
+    const parsed = Number(match[1]);
+    if (Number.isInteger(parsed) && parsed > maxSuffix) {
+      maxSuffix = parsed;
+    }
+  }
+
+  const exists = db.prepare<{ id: string }>(`SELECT id FROM ${tableName} WHERE id = ?`);
+  let next = maxSuffix + 1;
+  while (true) {
+    const id = `${prefix}-${datePart}-${String(next).padStart(3, '0')}`;
+    if (!exists.get(id)) {
+      return id;
+    }
+    next += 1;
+  }
 }
 
 export function appendAuditLog(action: string, entityType: string, entityId: string, payload: unknown) {

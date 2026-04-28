@@ -1,4 +1,4 @@
-﻿import type { CreateProductPayload, CreateSupplierPayload, CreateUserPayload } from '@/types/settings';
+import type { CreateProductPayload, CreateSupplierPayload, CreateUserPayload } from '@/types/settings';
 
 export type SettingsSection = 'access' | 'suppliers' | 'products' | 'warehouses';
 

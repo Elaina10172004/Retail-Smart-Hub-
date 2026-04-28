@@ -1,4 +1,4 @@
-﻿import { appendAuditLog, db, nextDocumentId, syncFinanceDocuments } from '../../database/db';
+import { appendAuditLog, db, nextDocumentId, syncFinanceDocuments } from '../../database/db';
 import { addDays, currentDateString } from '../../shared/format';
 
 export type ReceivableStatus = '未收款' | '部分收款' | '已收款' | '逾期';
@@ -22,6 +22,17 @@ export interface ReceiptRecord {
   receivedAt: string;
   method: string;
   remark?: string;
+  items: ReceiptRecordItem[];
+}
+
+export interface ReceiptRecordItem {
+  id: string;
+  receiptRecordId: string;
+  salesOrderItemId: string;
+  productId?: string;
+  sku: string;
+  productName: string;
+  amount: number;
 }
 
 export interface PaymentRecord {
@@ -54,7 +65,20 @@ export interface ReceivableDetailRecord extends ReceivableRecord {
   customerName: string;
   orderChannel: string;
   remark?: string;
+  items: ReceivableLineItem[];
   records: ReceiptRecord[];
+}
+
+export interface ReceivableLineItem {
+  id: string;
+  productId?: string;
+  sku: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  lineAmount: number;
+  receivedAmount: number;
+  remainingAmount: number;
 }
 
 export interface PayableRecord {
@@ -100,6 +124,35 @@ interface PayableRow {
   dueDate: string;
   lastPaidAt: string | null;
   remark: string | null;
+}
+
+interface ReceiptItemRow {
+  id: string;
+  receiptRecordId: string;
+  salesOrderItemId: string;
+  productId: string | null;
+  sku: string;
+  productName: string;
+  amount: number;
+}
+
+interface ReceivableLineRow {
+  id: string;
+  productId: string | null;
+  sku: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface ReceiveReceivableInput {
+  amount?: number;
+  method?: string;
+  remark?: string;
+  items?: Array<{
+    salesOrderItemId: string;
+    amount: number;
+  }>;
 }
 
 function diffDays(targetDate: string, baseDate = currentDateString()) {
@@ -241,6 +294,56 @@ function loadReceiptRows(receivableId?: string) {
   `).all();
 }
 
+function loadReceiptItemRows(receivableId?: string) {
+  if (receivableId) {
+    return db.prepare<ReceiptItemRow>(`
+      SELECT
+        rri.id,
+        rri.receipt_record_id as receiptRecordId,
+        rri.sales_order_item_id as salesOrderItemId,
+        rri.product_id as productId,
+        rri.sku,
+        rri.product_name as productName,
+        rri.amount
+      FROM receipt_record_items rri
+      JOIN receipt_records rr ON rr.id = rri.receipt_record_id
+      WHERE rr.receivable_id = ?
+      ORDER BY rr.received_at DESC, rr.id DESC, rri.id ASC
+    `).all(receivableId);
+  }
+
+  return db.prepare<ReceiptItemRow>(`
+    SELECT
+      rri.id,
+      rri.receipt_record_id as receiptRecordId,
+      rri.sales_order_item_id as salesOrderItemId,
+      rri.product_id as productId,
+      rri.sku,
+      rri.product_name as productName,
+      rri.amount
+    FROM receipt_record_items rri
+    JOIN receipt_records rr ON rr.id = rri.receipt_record_id
+    ORDER BY rr.received_at DESC, rr.id DESC, rri.id ASC
+  `).all();
+}
+
+function loadReceivableLineRows(receivableId: string) {
+  return db.prepare<ReceivableLineRow>(`
+    SELECT
+      soi.id,
+      soi.product_id as productId,
+      soi.sku,
+      soi.product_name as productName,
+      soi.quantity,
+      soi.unit_price as unitPrice
+    FROM receivables r
+    JOIN sales_orders so ON so.id = r.sales_order_id
+    JOIN sales_order_items soi ON soi.sales_order_id = so.id
+    WHERE r.id = ?
+    ORDER BY soi.id ASC
+  `).all(receivableId);
+}
+
 function loadPaymentRows(payableId?: string) {
   if (payableId) {
     return db.prepare<PaymentRecord>(`
@@ -268,6 +371,34 @@ function loadPaymentRows(payableId?: string) {
     FROM payment_records
     ORDER BY paid_at DESC, id DESC
   `).all();
+}
+
+function roundCurrency(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function buildReceiptItemMap(receivableId?: string) {
+  const receiptItems = loadReceiptItemRows(receivableId).map((item) => ({
+    id: item.id,
+    receiptRecordId: item.receiptRecordId,
+    salesOrderItemId: item.salesOrderItemId,
+    productId: item.productId ?? undefined,
+    sku: item.sku,
+    productName: item.productName,
+    amount: item.amount,
+  }));
+
+  const itemsByReceiptId = new Map<string, ReceiptRecordItem[]>();
+  const receivedAmountByLineId = new Map<string, number>();
+
+  receiptItems.forEach((item) => {
+    const list = itemsByReceiptId.get(item.receiptRecordId) || [];
+    list.push(item);
+    itemsByReceiptId.set(item.receiptRecordId, list);
+    receivedAmountByLineId.set(item.salesOrderItemId, roundCurrency((receivedAmountByLineId.get(item.salesOrderItemId) || 0) + item.amount));
+  });
+
+  return { itemsByReceiptId, receivedAmountByLineId };
 }
 
 export function getFinanceOverview(): FinanceOverview {
@@ -313,22 +444,43 @@ export function getReceivableDetail(id: string): ReceivableDetailRecord | null {
   }
 
   const base = toReceivableRecord(row);
+  const { itemsByReceiptId, receivedAmountByLineId } = buildReceiptItemMap(id);
+  const items = loadReceivableLineRows(id).map((item) => {
+    const lineAmount = roundCurrency(item.quantity * item.unitPrice);
+    const receivedAmount = roundCurrency(receivedAmountByLineId.get(item.id) || 0);
+    return {
+      id: item.id,
+      productId: item.productId ?? undefined,
+      sku: item.sku,
+      productName: item.productName,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      lineAmount,
+      receivedAmount,
+      remainingAmount: Math.max(roundCurrency(lineAmount - receivedAmount), 0),
+    } satisfies ReceivableLineItem;
+  });
+
   return {
     ...base,
     customerName: row.customerName,
     orderChannel: row.orderChannel,
     remark: row.remark ?? undefined,
+    items,
     records: loadReceiptRows(id).map((record) => ({
       ...record,
       remark: record.remark || undefined,
+      items: itemsByReceiptId.get(record.id) || [],
     })),
   };
 }
 
 export function listReceiptRecords(receivableId?: string) {
+  const { itemsByReceiptId } = buildReceiptItemMap(receivableId);
   return loadReceiptRows(receivableId).map((record) => ({
     ...record,
     remark: record.remark || undefined,
+    items: itemsByReceiptId.get(record.id) || [],
   }));
 }
 
@@ -360,23 +512,75 @@ export function listPaymentRecords(payableId?: string) {
   }));
 }
 
-export function receiveReceivable(id: string, amount: number, method = '银行转账', remark?: string): ReceivableMutationResult {
-  const receivable = loadReceivableRows().find((item) => item.id === id);
+export function receiveReceivable(
+  id: string,
+  input: ReceiveReceivableInput,
+): ReceivableMutationResult {
+  const receivable = getReceivableDetail(id);
   if (!receivable) {
     throw new Error('Receivable not found');
   }
 
-  const remainingAmount = Math.max(receivable.amountDue - receivable.amountPaid, 0);
+  const remainingAmount = Math.max(receivable.remainingAmount, 0);
   if (remainingAmount <= 0) {
     throw new Error('Receivable already settled');
   }
 
+  const lineById = new Map(receivable.items.map((item) => [item.id, item]));
+  const allocationMap = new Map<string, number>();
+  const requestedItems = Array.isArray(input.items) ? input.items : [];
+
+  requestedItems.forEach((item) => {
+    const line = lineById.get(item.salesOrderItemId);
+    if (!line) {
+      throw new Error('Receipt line item not found');
+    }
+
+    const amount = roundCurrency(Number(item.amount));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('Invalid receipt item amount');
+    }
+
+    const nextAmount = roundCurrency((allocationMap.get(item.salesOrderItemId) || 0) + amount);
+    if (nextAmount > line.remainingAmount) {
+      throw new Error(`Receipt amount exceeds remaining balance for ${line.productName}`);
+    }
+
+    allocationMap.set(item.salesOrderItemId, nextAmount);
+  });
+
+  if (allocationMap.size === 0) {
+    const requestedAmount = roundCurrency(Number(input.amount));
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+      throw new Error('Invalid receipt amount');
+    }
+
+    let remainingToAllocate = requestedAmount;
+    receivable.items.forEach((item) => {
+      if (remainingToAllocate <= 0 || item.remainingAmount <= 0) {
+        return;
+      }
+      const allocated = roundCurrency(Math.min(item.remainingAmount, remainingToAllocate));
+      if (allocated > 0) {
+        allocationMap.set(item.id, allocated);
+        remainingToAllocate = roundCurrency(remainingToAllocate - allocated);
+      }
+    });
+
+    if (remainingToAllocate > 0) {
+      throw new Error('Invalid receipt amount');
+    }
+  }
+
+  const amount = roundCurrency(Array.from(allocationMap.values()).reduce((sum, item) => sum + item, 0));
   if (amount <= 0 || amount > remainingAmount) {
     throw new Error('Invalid receipt amount');
   }
 
   const receivedAt = currentDateString();
   const receiptId = nextDocumentId('receipt_records', 'REC', receivedAt);
+  const method = input.method?.trim() || '银行转账';
+  const remark = input.remark?.trim() || undefined;
 
   const transaction = db.transaction(() => {
     db.prepare('UPDATE receivables SET amount_paid = amount_paid + ?, last_received_at = ? WHERE id = ?').run(
@@ -388,6 +592,28 @@ export function receiveReceivable(id: string, amount: number, method = '银行�
     db.prepare(
       'INSERT INTO receipt_records (id, receivable_id, amount, received_at, method, remark) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(receiptId, id, amount, receivedAt, method, remark?.trim() || null);
+
+    let lineIndex = 0;
+    for (const [salesOrderItemId, lineAmount] of allocationMap.entries()) {
+      const line = lineById.get(salesOrderItemId);
+      if (!line) {
+        continue;
+      }
+      lineIndex += 1;
+      db.prepare(
+        `INSERT INTO receipt_record_items (
+          id, receipt_record_id, sales_order_item_id, product_id, sku, product_name, amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        `${receiptId}-ITEM-${String(lineIndex).padStart(3, '0')}`,
+        receiptId,
+        salesOrderItemId,
+        line.productId || null,
+        line.sku,
+        line.productName,
+        lineAmount,
+      );
+    }
 
     appendAuditLog('receive_receivable', 'receivable', id, {
       amount,

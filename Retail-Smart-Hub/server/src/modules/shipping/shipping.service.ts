@@ -1,4 +1,4 @@
-﻿import { appendAuditLog, appendInventoryMovement, db } from '../../database/db';
+import { appendAuditLog, appendInventoryMovement, db } from '../../database/db';
 import { currentDateString } from '../../shared/format';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
 import { allocateOutboundFromShelves } from '../inventory/inventory-shelf.service';

@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from typing import List, Sequence
 
+from .common import compact_text
 from .models import AttachmentInput
-
-
-def _compact_text(value: object) -> str:
-    return " ".join(str(value or "").strip().split())
 
 
 def summarize_attachments(attachments: Sequence[AttachmentInput]) -> str:
@@ -42,9 +39,9 @@ def summarize_attachments(attachments: Sequence[AttachmentInput]) -> str:
         page_count = sum(1 for block in item.blocks if block.type == "page")
         excerpt = ""
         if item.blocks:
-            excerpt = _compact_text(item.blocks[0].text)[:180]
+            excerpt = compact_text(item.blocks[0].text)[:180]
         elif item.textContent:
-            excerpt = _compact_text(item.textContent)[:180]
+            excerpt = compact_text(item.textContent)[:180]
         label_parts = [f"- {item.fileName} kind=document"]
         if page_count > 0:
             label_parts.append(f"pages={page_count}")

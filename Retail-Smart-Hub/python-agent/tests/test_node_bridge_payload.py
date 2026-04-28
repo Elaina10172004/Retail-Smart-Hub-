@@ -36,8 +36,6 @@ class CaptureBridge(NodeToolBridge):
                     "result": {"ok": True},
                 }
             }
-        if path == "/document/handle":
-            return {"result": {"handled": False}}
         if path == "/document/context":
             return {"context": ""}
         return {}
@@ -106,27 +104,6 @@ class NodeBridgePayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload_history[0]["content"], "show orders")
         self.assertNotIn("toolCalls", payload_history[0])
         self.assertNotIn("pendingActionId", payload_history[0])
-
-    async def test_document_bridge_payload_omits_attachment_none_fields(self) -> None:
-        request = ChatRequest(
-            prompt="import this",
-            userId="u-3",
-            username="tester",
-            attachments=[
-                AttachmentInput(
-                    fileName="customers.csv",
-                    target="customer",
-                    rows=[{"customerName": "A"}],
-                )
-            ],
-        )
-
-        await self.bridge.handle_document_skill(request)
-        assert self.bridge.last_body is not None
-        self.assertEqual(self.bridge.last_path, "/document/handle")
-        first_attachment = self.bridge.last_body["attachments"][0]
-        self.assertNotIn("id", first_attachment)
-        self.assertEqual(first_attachment["fileName"], "customers.csv")
 
     async def test_document_bridge_payload_preserves_document_blocks_and_sheets(self) -> None:
         request = ChatRequest(

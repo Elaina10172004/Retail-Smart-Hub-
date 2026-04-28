@@ -1,4 +1,4 @@
-﻿import { z } from 'zod';
+import { z } from 'zod';
 import { planRuntimeWriteAction, type WriteToolName } from './action.service';
 import { db } from '../../database/db';
 import type { AiApproval, AiPendingAction, AiToolCallRecord, ReadOnlyToolName } from './dto/tool.dto';
@@ -13,6 +13,7 @@ import {
 } from './memory-update.service';
 import { getProfileMemory } from './profile-memory.service';
 import { resolveActiveSupplierReference } from '../settings/settings.service';
+import type { CreateProcurementOrderItemPayload, CreateProcurementOrderPayload } from '../procurement/procurement.service';
 
 interface RuntimeToolExecutionRequest {
   prompt: string;
@@ -111,6 +112,22 @@ const memoryTargetSchema = z
     'accountPolicyNote',
   ])
   .optional();
+const procurementToolLineSchema = z
+  .object({
+    supplierName: z.string().trim().min(1).optional(),
+    sku: z.string().trim().optional(),
+    productName: z.string().trim().optional(),
+    quantity: z.coerce.number().int().min(1),
+    unitCost: z.coerce.number().gt(0),
+    salePrice: z.coerce.number().gt(0).optional(),
+    category: z.string().trim().optional(),
+    unit: z.string().trim().optional(),
+    safeStock: z.coerce.number().int().min(0).optional(),
+  })
+  .strict()
+  .refine((value) => Boolean(value.sku || value.productName), {
+    message: 'Either sku or productName is required',
+  });
 
 const readIdSchema = (key: string, pattern: RegExp) =>
   z
@@ -129,7 +146,7 @@ const READ_TOOL_SCHEMAS: Partial<Record<ReadOnlyToolName, RuntimeToolSchemaDefin
       type: 'object',
       additionalProperties: false,
       properties: {
-        status: { type: 'string', enum: ['待发货', '已发货', '已完成', '已取消'] },
+        status: { type: 'string', enum: ['待发货', '部分发货', '已发货', '已完成', '已取消'] },
         customerKeyword: { type: 'string' },
         dateFrom: { type: 'string', description: 'YYYY-MM-DD' },
         dateTo: { type: 'string', description: 'YYYY-MM-DD' },
@@ -138,7 +155,7 @@ const READ_TOOL_SCHEMAS: Partial<Record<ReadOnlyToolName, RuntimeToolSchemaDefin
     },
     parser: z
       .object({
-        status: z.enum(['待发货', '已发货', '已完成', '已取消']).optional(),
+        status: z.enum(['待发货', '部分发货', '已发货', '已完成', '已取消']).optional(),
         customerKeyword: keywordSchema,
         dateFrom: dateStringSchema.optional(),
         dateTo: dateStringSchema.optional(),
@@ -185,14 +202,14 @@ const READ_TOOL_SCHEMAS: Partial<Record<ReadOnlyToolName, RuntimeToolSchemaDefin
       type: 'object',
       additionalProperties: false,
       properties: {
-        status: { type: 'string', enum: ['待审核', '待到货', '部分到货', '已完成'] },
+        status: { type: 'string', enum: ['待审核', '采购中', '到货', '部分到货', '已完成', '已取消'] },
         supplierKeyword: { type: 'string' },
         limit: { type: 'integer', minimum: 1, maximum: 50 },
       },
     },
     parser: z
       .object({
-        status: z.enum(['待审核', '待到货', '部分到货', '已完成']).optional(),
+        status: z.enum(['待审核', '采购中', '到货', '部分到货', '已完成', '已取消']).optional(),
         supplierKeyword: keywordSchema,
         limit: integerLimitSchema,
       })
@@ -795,7 +812,7 @@ const READ_TOOL_SCHEMAS_PHASE_3: Partial<Record<ReadOnlyToolName, RuntimeToolSch
       type: 'object',
       additionalProperties: false,
       properties: {
-        status: { type: 'string', enum: ['待发货', '已发货', '已完成', '已取消'] },
+        status: { type: 'string', enum: ['待发货', '部分发货', '已发货', '已完成', '已取消'] },
         dateFrom: { type: 'string', description: 'YYYY-MM-DD' },
         dateTo: { type: 'string', description: 'YYYY-MM-DD' },
         limit: { type: 'integer', minimum: 1, maximum: 50 },
@@ -803,7 +820,7 @@ const READ_TOOL_SCHEMAS_PHASE_3: Partial<Record<ReadOnlyToolName, RuntimeToolSch
     },
     parser: z
       .object({
-        status: z.enum(['待发货', '已发货', '已完成', '已取消']).optional(),
+        status: z.enum(['待发货', '部分发货', '已发货', '已完成', '已取消']).optional(),
         dateFrom: dateStringSchema.optional(),
         dateTo: dateStringSchema.optional(),
         limit: integerLimitSchema,
@@ -1037,6 +1054,50 @@ const WRITE_TOOL_SCHEMAS: Record<RuntimeWriteToolName, RuntimeToolSchemaDefiniti
         amount: z.coerce.number().gt(0),
         method: z.string().trim().min(1).optional(),
         remark: z.string().trim().optional(),
+      })
+      .strict(),
+  },
+  create_procurement_order: {
+    type: 'write',
+    name: 'create_procurement_order',
+    description: 'Create a procurement order from structured or model-extracted lines (approval required).',
+    requiredPermissions: ['procurement.manage'],
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['supplierName', 'expectedDate', 'items'],
+      properties: {
+        supplierName: { type: 'string', description: 'Default supplier name or supplier id for lines without supplierName.' },
+        expectedDate: { type: 'string', description: 'YYYY-MM-DD' },
+        remark: { type: 'string' },
+        items: {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['quantity', 'unitCost'],
+            properties: {
+              supplierName: { type: 'string', description: 'Optional line-level supplier name or id.' },
+              sku: { type: 'string', description: 'Existing SKU, or optional SKU for a new product.' },
+              productName: { type: 'string', description: 'Product name from the document.' },
+              quantity: { type: 'integer', minimum: 1 },
+              unitCost: { type: 'number', minimum: 0.01 },
+              salePrice: { type: 'number', minimum: 0.01 },
+              category: { type: 'string' },
+              unit: { type: 'string' },
+              safeStock: { type: 'integer', minimum: 0 },
+            },
+          },
+        },
+      },
+    },
+    parser: z
+      .object({
+        supplierName: z.string().trim().min(1),
+        expectedDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/),
+        remark: z.string().trim().optional(),
+        items: z.array(procurementToolLineSchema).min(1),
       })
       .strict(),
   },
@@ -1534,6 +1595,115 @@ function resolveSupersedePendingActionId(
   return undefined;
 }
 
+type ProcurementToolLineArgs = z.infer<typeof procurementToolLineSchema>;
+
+function normalizeOptionalSku(value: unknown) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw || /^(auto|自动|自动生成|留空|空)$/i.test(raw)) {
+    return '';
+  }
+  return raw.toUpperCase();
+}
+
+function resolveProcurementSupplier(reference: string) {
+  const supplier = resolveActiveSupplierReference(reference);
+  if (!supplier) {
+    throw new Error(`Active supplier not found: ${reference}`);
+  }
+  return supplier;
+}
+
+function findProcurementProduct(line: ProcurementToolLineArgs, supplierId: string) {
+  const sku = normalizeOptionalSku(line.sku);
+  if (sku) {
+    return db
+      .prepare<{ id: string; sku: string; name: string; preferredSupplierId: string }>(
+        `SELECT id, sku, name, preferred_supplier_id as preferredSupplierId
+         FROM products
+         WHERE UPPER(sku) = ? AND status = 'active'`,
+      )
+      .get(sku);
+  }
+
+  const productName = String(line.productName || '').trim();
+  if (!productName) {
+    return null;
+  }
+
+  return (
+    db
+      .prepare<{ id: string; sku: string; name: string; preferredSupplierId: string }>(
+        `SELECT id, sku, name, preferred_supplier_id as preferredSupplierId
+         FROM products
+         WHERE name = ? AND preferred_supplier_id = ? AND status = 'active'
+         ORDER BY id ASC
+         LIMIT 1`,
+      )
+      .get(productName, supplierId) ||
+    db
+      .prepare<{ id: string; sku: string; name: string; preferredSupplierId: string }>(
+        `SELECT id, sku, name, preferred_supplier_id as preferredSupplierId
+         FROM products
+         WHERE name LIKE ? AND preferred_supplier_id = ? AND status = 'active'
+         ORDER BY id ASC
+         LIMIT 1`,
+      )
+      .get(`%${productName}%`, supplierId)
+  );
+}
+
+function buildProcurementPayloadFromToolArgs(args: Record<string, unknown>): CreateProcurementOrderPayload {
+  const defaultSupplier = resolveProcurementSupplier(String(args.supplierName || '').trim());
+  const rawItems = Array.isArray(args.items) ? (args.items as ProcurementToolLineArgs[]) : [];
+  const items: CreateProcurementOrderItemPayload[] = rawItems.map((line, index) => {
+    const supplierReference = line.supplierName?.trim() || defaultSupplier.name;
+    const supplier = resolveProcurementSupplier(supplierReference);
+    const product = findProcurementProduct(line, supplier.id);
+    const quantity = Math.trunc(Number(line.quantity));
+    const unitCost = Number(line.unitCost);
+
+    if (product) {
+      if (product.preferredSupplierId !== supplier.id) {
+        throw new Error(`Product ${product.sku} does not belong to supplier ${supplier.name}`);
+      }
+      return {
+        mode: 'existing',
+        supplierId: supplier.id,
+        productId: product.id,
+        quantity,
+        unitCost,
+      };
+    }
+
+    const productName = String(line.productName || '').trim();
+    if (!productName) {
+      throw new Error(`items[${index}].productName is required when SKU does not match an existing product`);
+    }
+
+    return {
+      mode: 'new',
+      supplierId: supplier.id,
+      quantity,
+      unitCost,
+      newProduct: {
+        name: productName,
+        sku: normalizeOptionalSku(line.sku) || undefined,
+        salePrice: line.salePrice ?? unitCost,
+        category: line.category?.trim() || '采购新增',
+        unit: line.unit?.trim() || '件',
+        safeStock: line.safeStock ?? 0,
+      },
+    };
+  });
+
+  return {
+    supplierId: defaultSupplier.id,
+    expectedDate: String(args.expectedDate || '').trim(),
+    remark: typeof args.remark === 'string' ? args.remark.trim() : undefined,
+    items,
+  };
+}
+
 function executeTypedWriteTool(
   toolName: RuntimeWriteToolName,
   args: Record<string, unknown>,
@@ -1668,6 +1838,16 @@ function executeTypedWriteTool(
         };
         summary = `待确认：登记应付 ${payableId} 付款 ${amount.toFixed(2)} 元。`;
         confirmationMessage = `将对「${payableId}」登记付款 ${amount.toFixed(2)} 元（${method}），确认后执行，是否继续？`;
+        break;
+      }
+      case 'create_procurement_order': {
+        const procurementPayload = buildProcurementPayloadFromToolArgs(args);
+        payload = procurementPayload as unknown as Record<string, unknown>;
+        const supplierCount = new Set(
+          procurementPayload.items.map((item) => item.supplierId || procurementPayload.supplierId),
+        ).size;
+        summary = `待确认：创建采购单（${procurementPayload.items.length} 项，${supplierCount > 1 ? '多供应商' : '单供应商'}）。`;
+        confirmationMessage = `将根据已抽取的采购明细创建采购单，预计到货 ${procurementPayload.expectedDate}，共 ${procurementPayload.items.length} 项。确认后写入系统，是否继续？`;
         break;
       }
       case 'create_sales_order': {

@@ -15,6 +15,7 @@ export interface AiStatus {
 }
 
 export type AiProvider = 'deepseek' | 'openai' | 'gemini';
+export type AiApiKeySource = 'persisted' | 'environment' | 'none';
 
 export interface AiModelProfile {
   provider: AiProvider;
@@ -22,6 +23,7 @@ export interface AiModelProfile {
   model: string;
   hasApiKey: boolean;
   apiKeyMasked: string;
+  apiKeySource: AiApiKeySource;
 }
 
 export interface AiSearchProviderProfile {
@@ -31,6 +33,7 @@ export interface AiSearchProviderProfile {
   maxResults: number;
   hasApiKey: boolean;
   apiKeyMasked: string;
+  apiKeySource: AiApiKeySource;
   enabled: boolean;
 }
 
@@ -63,7 +66,6 @@ export interface AiRuntimeConfig {
   smallModelProfile: AiModelProfile;
   largeModelProfile: AiModelProfile;
   tavilyProfile: AiSearchProviderProfile;
-  layeredAgentEnabled: boolean;
   updatedAt?: string;
 }
 
@@ -168,6 +170,28 @@ export interface AiMemoryFactsResponse {
 export type AiToolCall = AiToolCallRecord;
 export type { AiApproval, AiPendingAction, AiToolCallRecord };
 
+export interface AiClarificationOption {
+  id: string;
+  label: string;
+  prompt: string;
+  description?: string;
+}
+
+export interface AiClarificationCard {
+  title: string;
+  message: string;
+  options: AiClarificationOption[];
+}
+
+export interface AiInterruption {
+  id: string;
+  kind: 'clarification';
+  status: 'awaiting_user';
+  title: string;
+  message: string;
+  options: AiClarificationOption[];
+}
+
 export interface AiChatHistoryTurn {
   role: 'user' | 'assistant';
   content: string;
@@ -180,6 +204,11 @@ export interface AiChatHistoryTurn {
 export interface AiChatRequest {
   prompt: string;
   conversationId?: string;
+  resume?: {
+    interruptionId: string;
+    optionId: string;
+    prompt?: string;
+  };
   history?: AiChatHistoryTurn[];
   attachments?: AiAttachmentDraft[];
 }
@@ -258,6 +287,8 @@ export interface AiChatResponse {
   };
   pendingAction?: AiPendingAction;
   approval?: AiApproval;
+  clarification?: AiClarificationCard;
+  interruption?: AiInterruption;
   reasoningContent?: string;
   configured: boolean;
   provider: string;
@@ -285,6 +316,8 @@ export interface AiMessage {
   webSources?: AiWebSource[];
   toolCalls?: AiToolCall[];
   pendingAction?: AiPendingAction;
+  clarification?: AiClarificationCard;
+  interruption?: AiInterruption;
   trace?: string[];
   isSystem?: boolean;
 }

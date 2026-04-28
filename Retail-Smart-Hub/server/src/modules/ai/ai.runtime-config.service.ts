@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { env } from '../../config/env';
+import { aiBootstrapSecrets, env } from '../../config/env';
 
 type AiProvider = 'deepseek' | 'openai' | 'gemini';
 type TavilyTopic = 'general' | 'news';
+type ApiKeySource = 'persisted' | 'environment' | 'none';
 
 interface PersistedAiRuntimeConfig {
   provider?: AiProvider;
@@ -29,7 +30,6 @@ interface PersistedAiRuntimeConfig {
   largeApiKey?: string;
   largeBaseUrl?: string;
   largeModel?: string;
-  layeredAgentEnabled?: boolean;
   updatedAt?: string;
 }
 
@@ -39,6 +39,7 @@ export interface AiModelProfileSnapshot {
   model: string;
   hasApiKey: boolean;
   apiKeyMasked: string;
+  apiKeySource: ApiKeySource;
 }
 
 export interface TavilyRuntimeProfileSnapshot {
@@ -48,6 +49,7 @@ export interface TavilyRuntimeProfileSnapshot {
   maxResults: number;
   hasApiKey: boolean;
   apiKeyMasked: string;
+  apiKeySource: ApiKeySource;
   enabled: boolean;
 }
 
@@ -80,7 +82,6 @@ export interface AiRuntimeConfigSnapshot {
   smallModelProfile: AiModelProfileSnapshot;
   largeModelProfile: AiModelProfileSnapshot;
   tavilyProfile: TavilyRuntimeProfileSnapshot;
-  layeredAgentEnabled: boolean;
   updatedAt?: string;
 }
 
@@ -107,7 +108,6 @@ export interface AiRuntimeConfigPatchInput {
   largeApiKey?: string | null;
   largeBaseUrl?: string;
   largeModel?: string;
-  layeredAgentEnabled?: boolean;
 }
 
 const runtimeConfigPath = resolveRuntimeConfigPath();
@@ -258,10 +258,6 @@ function readOptionalProvider(value: unknown): AiProvider | undefined {
   return normalizeProvider(value);
 }
 
-function readOptionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === 'boolean' ? value : undefined;
-}
-
 function readOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
@@ -300,28 +296,59 @@ function resolveProviderApiKey(provider: AiProvider) {
   return env.deepseekApiKey;
 }
 
-function resolveProviderProfile(provider: AiProvider): AiModelProfileSnapshot {
+function resolveApiKeySource(persistedValue: string | undefined, bootstrapValue: string): ApiKeySource {
+  if (persistedValue !== undefined) {
+    return persistedValue.trim() ? 'persisted' : 'none';
+  }
+  return bootstrapValue.trim() ? 'environment' : 'none';
+}
+
+function resolvePersistedProviderApiKey(persisted: PersistedAiRuntimeConfig, provider: AiProvider) {
+  if (provider === 'openai') {
+    return persisted.openaiApiKey;
+  }
+  if (provider === 'gemini') {
+    return persisted.geminiApiKey;
+  }
+  return persisted.deepseekApiKey;
+}
+
+function resolveProviderProfile(provider: AiProvider, persisted: PersistedAiRuntimeConfig): AiModelProfileSnapshot {
   const baseUrl = resolveProviderBaseUrl(provider).trim();
   const model = resolveProviderModel(provider).trim();
   const apiKey = resolveProviderApiKey(provider).trim();
+  const bootstrapApiKey =
+    provider === 'openai'
+      ? aiBootstrapSecrets.openaiApiKey
+      : provider === 'gemini'
+        ? aiBootstrapSecrets.geminiApiKey
+        : aiBootstrapSecrets.deepseekApiKey;
+  const apiKeySource = resolveApiKeySource(resolvePersistedProviderApiKey(persisted, provider), bootstrapApiKey);
   return {
     provider,
     baseUrl,
     model,
     hasApiKey: Boolean(apiKey),
     apiKeyMasked: maskApiKey(apiKey),
+    apiKeySource,
   };
 }
 
-function resolveRoleProfile(role: 'small' | 'large'): AiModelProfileSnapshot {
+function resolveRoleProfile(role: 'small' | 'large', persisted: PersistedAiRuntimeConfig): AiModelProfileSnapshot {
   const provider = role === 'small' ? normalizeProvider(env.aiSmallProvider) : normalizeProvider(env.aiLargeProvider);
   const baseUrlRaw = role === 'small' ? env.aiSmallBaseUrl : env.aiLargeBaseUrl;
   const modelRaw = role === 'small' ? env.aiSmallModel : env.aiLargeModel;
   const apiKeyRaw = role === 'small' ? env.aiSmallApiKey : env.aiLargeApiKey;
-  const providerProfile = resolveProviderProfile(provider);
+  const providerProfile = resolveProviderProfile(provider, persisted);
   const baseUrl = baseUrlRaw.trim() || providerProfile.baseUrl;
   const model = modelRaw.trim() || providerProfile.model;
-  const apiKey = apiKeyRaw.trim() || resolveProviderApiKey(provider).trim();
+  const explicitRoleApiKey = apiKeyRaw.trim();
+  const apiKey = explicitRoleApiKey || resolveProviderApiKey(provider).trim();
+  const rolePersistedApiKey = role === 'small' ? persisted.smallApiKey : persisted.largeApiKey;
+  const bootstrapRoleApiKey = role === 'small' ? aiBootstrapSecrets.aiSmallApiKey : aiBootstrapSecrets.aiLargeApiKey;
+  const apiKeySource = explicitRoleApiKey
+    ? resolveApiKeySource(rolePersistedApiKey, bootstrapRoleApiKey)
+    : providerProfile.apiKeySource;
 
   return {
     provider,
@@ -329,10 +356,11 @@ function resolveRoleProfile(role: 'small' | 'large'): AiModelProfileSnapshot {
     model,
     hasApiKey: Boolean(apiKey),
     apiKeyMasked: maskApiKey(apiKey),
+    apiKeySource,
   };
 }
 
-function resolveTavilyProfile(): TavilyRuntimeProfileSnapshot {
+function resolveTavilyProfile(persisted: PersistedAiRuntimeConfig): TavilyRuntimeProfileSnapshot {
   const apiKey = env.tavilyApiKey.trim();
   return {
     provider: 'tavily',
@@ -341,6 +369,7 @@ function resolveTavilyProfile(): TavilyRuntimeProfileSnapshot {
     maxResults: clampTavilyMaxResults(env.tavilyMaxResults),
     hasApiKey: Boolean(apiKey),
     apiKeyMasked: maskApiKey(apiKey),
+    apiKeySource: resolveApiKeySource(persisted.tavilyApiKey, aiBootstrapSecrets.tavilyApiKey),
     enabled: Boolean(apiKey),
   };
 }
@@ -407,7 +436,6 @@ function readPersistedConfig(): PersistedAiRuntimeConfig {
     const geminiModel = readOptionalString(parsed.geminiModel);
     const smallProvider = readOptionalProvider(parsed.smallProvider) || provider;
     const largeProvider = readOptionalProvider(parsed.largeProvider) || provider;
-    const layeredAgentEnabled = readOptionalBoolean(parsed.layeredAgentEnabled);
     const tavilyApiKeyRead = readOptionalSecretString(parsed.tavilyApiKey);
 
     const needsRewrite =
@@ -519,7 +547,6 @@ function readPersistedConfig(): PersistedAiRuntimeConfig {
               geminiBaseUrl,
               geminiModel,
             }),
-      layeredAgentEnabled,
       updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : undefined,
     };
 
@@ -664,10 +691,6 @@ function applyRuntimeConfig(patch: PersistedAiRuntimeConfig) {
     process.env.AI_LARGE_MODEL = patch.largeModel;
   }
 
-  if (patch.layeredAgentEnabled !== undefined) {
-    env.aiLayeredAgentEnabled = Boolean(patch.layeredAgentEnabled);
-    process.env.AI_LAYERED_AGENT_ENABLED = env.aiLayeredAgentEnabled ? 'true' : 'false';
-  }
 }
 
 function normalizePatch(input: AiRuntimeConfigPatchInput): PersistedAiRuntimeConfig {
@@ -762,22 +785,18 @@ function normalizePatch(input: AiRuntimeConfigPatchInput): PersistedAiRuntimeCon
     patch.largeModel = input.largeModel.trim();
   }
 
-  if (input.layeredAgentEnabled !== undefined) {
-    patch.layeredAgentEnabled = Boolean(input.layeredAgentEnabled);
-  }
-
   return patch;
 }
 
 function buildSnapshot(persisted: PersistedAiRuntimeConfig): AiRuntimeConfigSnapshot {
   const providerProfiles: Record<AiProvider, AiModelProfileSnapshot> = {
-    deepseek: resolveProviderProfile('deepseek'),
-    openai: resolveProviderProfile('openai'),
-    gemini: resolveProviderProfile('gemini'),
+    deepseek: resolveProviderProfile('deepseek', persisted),
+    openai: resolveProviderProfile('openai', persisted),
+    gemini: resolveProviderProfile('gemini', persisted),
   };
-  const smallModelProfile = resolveRoleProfile('small');
-  const largeModelProfile = resolveRoleProfile('large');
-  const tavilyProfile = resolveTavilyProfile();
+  const smallModelProfile = resolveRoleProfile('small', persisted);
+  const largeModelProfile = resolveRoleProfile('large', persisted);
+  const tavilyProfile = resolveTavilyProfile(persisted);
 
   return {
     provider: largeModelProfile.provider,
@@ -808,10 +827,6 @@ function buildSnapshot(persisted: PersistedAiRuntimeConfig): AiRuntimeConfigSnap
     smallModelProfile,
     largeModelProfile,
     tavilyProfile,
-    layeredAgentEnabled:
-      typeof persisted.layeredAgentEnabled === 'boolean'
-        ? persisted.layeredAgentEnabled
-        : Boolean(env.aiLayeredAgentEnabled),
     updatedAt: persisted.updatedAt,
   };
 }

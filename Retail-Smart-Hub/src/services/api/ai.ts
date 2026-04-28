@@ -1,4 +1,4 @@
-﻿import { API_BASE_URL, apiClient, getAuthToken } from '@/services/api/client';
+import { API_BASE_URL, apiClient, getAuthToken } from '@/services/api/client';
 import type { ApiEnvelope } from '@/types/api';
 import type {
   AiActionMutationResponse,
@@ -23,6 +23,8 @@ export interface AiChatStreamMeta {
   answer_meta?: AiChatResponse['answer_meta'];
   pendingAction?: AiChatResponse['pendingAction'];
   approval?: AiChatResponse['approval'];
+  clarification?: AiChatResponse['clarification'];
+  interruption?: AiChatResponse['interruption'];
   configured: AiChatResponse['configured'];
   provider: AiChatResponse['provider'];
   model: AiChatResponse['model'];
@@ -75,7 +77,6 @@ export function patchAiRuntimeConfig(payload: {
   largeApiKey?: string | null;
   largeBaseUrl?: string;
   largeModel?: string;
-  layeredAgentEnabled?: boolean;
 }) {
   return apiClient.patch<ApiEnvelope<AiRuntimeConfig>>('/ai/config', payload);
 }
@@ -384,13 +385,12 @@ export async function streamAiChat(payload: AiChatRequest, handlers: AiChatStrea
     }
   }
 
+  if (streamErrorMessage) {
+    throw new Error(streamErrorMessage);
+  }
+
   if (lastMeta || replyText || reasoningText) {
-    const warning = streamErrorMessage ? `流式尾部异常：${streamErrorMessage}` : '';
     const trace = Array.isArray(lastMeta?.trace) ? [...lastMeta.trace] : [];
-    if (warning) {
-      trace.push(warning);
-    }
-    const note = [lastMeta?.note, warning].filter(Boolean).join(' | ');
 
     return {
       reply: replyText.trim() || '模型流式回复已结束。',
@@ -401,16 +401,14 @@ export async function streamAiChat(payload: AiChatRequest, handlers: AiChatStrea
       answer_meta: lastMeta?.answer_meta,
       pendingAction: lastMeta?.pendingAction,
       approval: lastMeta?.approval,
+      clarification: lastMeta?.clarification,
+      interruption: lastMeta?.interruption,
       configured: lastMeta?.configured ?? true,
       provider: lastMeta?.provider || 'deepseek',
       model: lastMeta?.model || 'deepseek-stream',
-      note: note || undefined,
+      note: lastMeta?.note || undefined,
       trace: trace.length > 0 ? trace : undefined,
     };
-  }
-
-  if (streamErrorMessage) {
-    throw new Error(streamErrorMessage);
   }
 
   throw new Error('Stream ended without final response');

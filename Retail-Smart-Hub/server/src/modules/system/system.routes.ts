@@ -1,4 +1,4 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { moduleCatalog } from '../../shared/module-catalog';
 import {
   changePassword,

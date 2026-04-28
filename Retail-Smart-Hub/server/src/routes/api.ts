@@ -1,4 +1,4 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { aiRouter } from '../modules/ai/ai.routes';
 import { agentInternalRouter } from '../modules/ai/agent-internal.routes';
 import { arrivalRouter } from '../modules/arrival/arrival.routes';

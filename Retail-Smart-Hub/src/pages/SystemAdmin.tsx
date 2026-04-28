@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -92,6 +92,7 @@ export function SystemAdmin() {
     ];
     if (canManageAccess) next.push({ id: 'access', label: '权限与用户', icon: Shield });
     if (canManageMasterData) next.push({ id: 'master', label: '基础资料', icon: Database });
+    next.push({ id: 'ai', label: 'AI 配置', icon: Database });
     if (canViewLogs) next.push({ id: 'logs', label: '审计日志', icon: FileSearch });
     return next;
   }, [canManageAccess, canManageMasterData, canViewLogs]);
@@ -107,6 +108,7 @@ export function SystemAdmin() {
   const [productForm, setProductForm] = useState<CreateProductPayload>(defaultProductForm);
   const [roleForm, setRoleForm] = useState<CreateRolePayload>(defaultRoleForm);
   const [warehouseForm, setWarehouseForm] = useState<CreateWarehousePayload>(defaultWarehouseForm);
+  const [ConfigManagementPage, setConfigManagementPage] = useState<React.ComponentType<{ embedded?: boolean }> | null>(null);
   const [profileForm, setProfileForm] = useState({
     email: user?.email || '',
     phone: user?.phone || '',
@@ -181,6 +183,18 @@ export function SystemAdmin() {
       setActiveSection(sections[0].id);
     }
   }, [activeSection, sections]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void import('@/pages/ConfigManagement').then((module) => {
+      if (!cancelled) {
+        setConfigManagementPage(() => module.ConfigManagement);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadBaseData = async () => {
     if (!canManageAccess && !canManageMasterData) {
@@ -1621,6 +1635,10 @@ export function SystemAdmin() {
             </Card>
           </div>
         </>
+      )}
+
+      {activeSection === 'ai' && (
+        ConfigManagementPage ? <ConfigManagementPage embedded /> : <div className="rounded-xl border border-gray-200 bg-white px-4 py-6 text-sm text-gray-500">正在加载 AI 配置...</div>
       )}
 
       {activeSection === 'logs' && canViewLogs && (

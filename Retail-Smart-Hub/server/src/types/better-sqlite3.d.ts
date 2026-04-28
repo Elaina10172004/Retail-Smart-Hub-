@@ -1,4 +1,4 @@
-﻿declare module 'better-sqlite3' {
+declare module 'better-sqlite3' {
   export interface RunResult {
     changes: number;
     lastInsertRowid: number | bigint;

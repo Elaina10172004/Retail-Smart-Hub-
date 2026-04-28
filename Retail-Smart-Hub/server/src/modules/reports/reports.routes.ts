@@ -1,4 +1,4 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { requirePermission } from '../../shared/auth';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { ok } from '../../shared/response';

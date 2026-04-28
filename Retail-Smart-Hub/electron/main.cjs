@@ -357,7 +357,9 @@ async function startEmbeddedApi() {
 
   process.env.NODE_ENV = 'production';
   process.env.API_PORT = String(apiPort);
-  process.env.RETAIL_SMART_HUB_DATA_DIR = process.env.RETAIL_SMART_HUB_DATA_DIR || path.join(app.getPath('userData'), 'data');
+  process.env.RETAIL_SMART_HUB_DATA_DIR =
+    process.env.RETAIL_SMART_HUB_DATA_DIR ||
+    path.join(app.getPath('appData'), 'Retail Smart Hub Runtime', 'user-data', 'data');
   process.env.RETAIL_SMART_HUB_ENV_DIR = process.env.RETAIL_SMART_HUB_ENV_DIR || path.dirname(app.getPath('exe'));
   process.env.CORS_ALLOW_NULL_ORIGIN = process.env.CORS_ALLOW_NULL_ORIGIN || 'true';
   process.env.RETAIL_SMART_HUB_DESKTOP_LOG = process.env.RETAIL_SMART_HUB_DESKTOP_LOG || resolveDesktopLogPath();

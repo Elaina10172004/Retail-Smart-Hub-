@@ -1,4 +1,4 @@
-﻿export interface ProcurementOrder {
+export interface ProcurementOrder {
   id: string;
   supplier: string;
   createDate: string;
@@ -69,6 +69,7 @@ export interface CreateProcurementNewProductPayload {
 
 export interface CreateProcurementOrderExistingItemPayload {
   mode: 'existing';
+  supplierId?: string;
   productId: string;
   quantity: number;
   unitCost: number;
@@ -76,6 +77,7 @@ export interface CreateProcurementOrderExistingItemPayload {
 
 export interface CreateProcurementOrderNewItemPayload {
   mode: 'new';
+  supplierId?: string;
   quantity: number;
   unitCost: number;
   newProduct: CreateProcurementNewProductPayload;
@@ -99,4 +101,37 @@ export interface UpdateProcurementStatusPayload {
 export interface DeleteProcurementOrderResponse {
   id: string;
   deleted: boolean;
+}
+
+export interface ProcurementArrivalWorkspaceItem {
+  itemId: string;
+  sku: string;
+  productName: string;
+  orderedQty: number;
+  arrivedQty: number;
+  remainingQty: number;
+}
+
+export interface ProcurementArrivalWorkspaceRecord {
+  purchaseOrderId: string;
+  arrivalId?: string;
+  supplier: string;
+  expectedDate: string;
+  procurementStatus: string;
+  arrivalStatus?: string;
+  arrivedAt?: string;
+  editable: boolean;
+  items: ProcurementArrivalWorkspaceItem[];
+  totalOrderedQty: number;
+  totalArrivedQty: number;
+  totalRemainingQty: number;
+}
+
+export interface RegisterProcurementArrivalItemPayload {
+  itemId: string;
+  arrivedQty: number;
+}
+
+export interface RegisterProcurementArrivalPayload {
+  items: RegisterProcurementArrivalItemPayload[];
 }

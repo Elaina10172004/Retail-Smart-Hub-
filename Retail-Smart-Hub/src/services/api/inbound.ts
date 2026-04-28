@@ -1,15 +1,26 @@
-﻿import { apiClient } from '@/services/api/client';
+import { apiClient } from '@/services/api/client';
 import type { ApiEnvelope } from '@/types/api';
 import type {
+  CreateManualInboundPayload,
+  CreateManualInboundResult,
   DeleteInboundResponse,
   InboundDetailRecord,
   InboundRecord,
+  ManualInboundCandidateItem,
   SaveInboundDraftPayload,
   UpdateInboundStatusPayload,
 } from '@/types/inbound';
 
 export function fetchInbounds() {
   return apiClient.get<ApiEnvelope<InboundRecord[]>>('/inbound');
+}
+
+export function fetchManualInboundCreateOptions() {
+  return apiClient.get<ApiEnvelope<ManualInboundCandidateItem[]>>('/inbound/create-options');
+}
+
+export function createManualInbound(payload: CreateManualInboundPayload) {
+  return apiClient.post<ApiEnvelope<CreateManualInboundResult>>('/inbound', payload);
 }
 
 export function fetchInboundDetail(id: string) {

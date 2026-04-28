@@ -169,6 +169,89 @@ export function updateShelfStock(productId: string, warehouseId: string, shelfId
   db.prepare('UPDATE inventory_shelf_stock SET quantity = ? WHERE id = ?').run(nextQuantity, existing.id);
 }
 
+export function planInboundShelfAllocations(
+  productId: string,
+  warehouseId: string,
+  quantity: number,
+  preferredShelfId?: string | null,
+  remainingByShelf?: Map<string, number>,
+) {
+  if (quantity <= 0) {
+    return [];
+  }
+
+  const shelves = listWarehouseShelves(warehouseId);
+  const localRemaining =
+    remainingByShelf ??
+    new Map<string, number>(shelves.map((shelf) => [shelf.id, shelf.remainingCapacity]));
+  const totalRemaining = Array.from(localRemaining.values()).reduce((sum, value) => sum + Math.max(value, 0), 0);
+
+  if (totalRemaining < quantity) {
+    throw new Error(`没有可用货架可容纳 ${productId} 的入库数量 ${quantity}。`);
+  }
+
+  const preferredIds: string[] = [];
+  if (preferredShelfId) {
+    preferredIds.push(preferredShelfId);
+  }
+  const suggestedShelf = suggestShelfForProduct(productId, warehouseId);
+  if (suggestedShelf && !preferredIds.includes(suggestedShelf.id)) {
+    preferredIds.push(suggestedShelf.id);
+  }
+
+  const orderedShelves = [
+    ...preferredIds
+      .map((shelfId) => shelves.find((shelf) => shelf.id === shelfId))
+      .filter((shelf): shelf is WarehouseShelfRecord => Boolean(shelf))
+      .filter((shelf, index, items) => items.findIndex((item) => item.id === shelf.id) === index),
+    ...shelves
+      .filter((shelf) => !preferredIds.includes(shelf.id))
+      .sort((left, right) => {
+        const leftRemaining = localRemaining.get(left.id) ?? left.remainingCapacity;
+        const rightRemaining = localRemaining.get(right.id) ?? right.remainingCapacity;
+        return rightRemaining - leftRemaining || left.sortOrder - right.sortOrder || left.shelfCode.localeCompare(right.shelfCode);
+      }),
+  ];
+
+  let remaining = quantity;
+  const allocations: Array<{ shelfId: string; quantity: number }> = [];
+
+  for (const shelf of orderedShelves) {
+    if (remaining <= 0) {
+      break;
+    }
+
+    const shelfRemaining = Math.max(localRemaining.get(shelf.id) ?? shelf.remainingCapacity, 0);
+    if (shelfRemaining <= 0) {
+      continue;
+    }
+
+    const assigned = Math.min(shelfRemaining, remaining);
+    allocations.push({ shelfId: shelf.id, quantity: assigned });
+    localRemaining.set(shelf.id, shelfRemaining - assigned);
+    remaining -= assigned;
+  }
+
+  if (remaining > 0) {
+    throw new Error(`没有可用货架可容纳 ${productId} 的入库数量 ${quantity}。`);
+  }
+
+  return allocations;
+}
+
+export function allocateInboundAcrossShelves(
+  productId: string,
+  warehouseId: string,
+  quantity: number,
+  preferredShelfId?: string | null,
+) {
+  const allocations = planInboundShelfAllocations(productId, warehouseId, quantity, preferredShelfId);
+  allocations.forEach((allocation) => {
+    updateShelfStock(productId, warehouseId, allocation.shelfId, allocation.quantity);
+  });
+  return allocations;
+}
+
 export function allocateOutboundFromShelves(productId: string, warehouseId: string, quantity: number) {
   if (quantity <= 0) {
     return [];
@@ -280,7 +363,7 @@ export function getShelfUsageRate() {
     return 0;
   }
 
-  return Math.min((totals.used / totals.capacity) * 100, 100);
+  return Math.min(totals.used / totals.capacity, 1);
 }
 
 export function getProductShelfPlacements(productId: string) {

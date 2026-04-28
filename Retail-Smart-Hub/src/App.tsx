@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Layout } from './components/Layout';
 import { AuthContext } from '@/auth/AuthContext';
 import { appModules, defaultModuleId, filterModulesByPermissions, findModuleById } from '@/config/modules';

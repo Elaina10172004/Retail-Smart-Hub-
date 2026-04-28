@@ -13,6 +13,12 @@ class HistoryItem(BaseModel):
     pendingActionStatus: Optional[str] = None
 
 
+class ResumeInput(BaseModel):
+    interruptionId: str
+    optionId: str
+    prompt: Optional[str] = None
+
+
 class AttachmentLocator(BaseModel):
     attachmentId: Optional[str] = None
     fileName: Optional[str] = None
@@ -67,6 +73,7 @@ class AttachmentInput(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str = ""
     conversationId: Optional[str] = None
+    resume: Optional[ResumeInput] = None
     userId: str
     tenantId: Optional[str] = None
     username: str
@@ -75,6 +82,16 @@ class ChatRequest(BaseModel):
     token: str = ""
     attachments: List[AttachmentInput] = Field(default_factory=list)
     history: List[HistoryItem] = Field(default_factory=list)
+
+
+class AgentPlan(BaseModel):
+    objective: str = ""
+    mode: str = "answer"
+    needs_tools: bool = False
+    needs_confirmation: bool = False
+    tool_names: List[str] = Field(default_factory=list)
+    steps: List[str] = Field(default_factory=list)
+    missing_evidence: List[str] = Field(default_factory=list)
 
 
 class ToolCallRecord(BaseModel):
@@ -97,6 +114,28 @@ class AnswerMeta(BaseModel):
     confidence_score: float = 0.0
 
 
+class ClarificationOption(BaseModel):
+    id: str
+    label: str
+    prompt: str
+    description: Optional[str] = None
+
+
+class ClarificationCard(BaseModel):
+    title: str
+    message: str
+    options: List[ClarificationOption] = Field(default_factory=list)
+
+
+class InterruptionState(BaseModel):
+    id: str
+    kind: str = "clarification"
+    status: str = "awaiting_user"
+    title: str
+    message: str
+    options: List[ClarificationOption] = Field(default_factory=list)
+
+
 class WebSource(BaseModel):
     title: str
     url: str
@@ -113,6 +152,8 @@ class ChatResponse(BaseModel):
     webSources: List[WebSource] = Field(default_factory=list)
     pendingAction: Optional[Dict[str, Any]] = None
     approval: Optional[Dict[str, Any]] = None
+    clarification: Optional[ClarificationCard] = None
+    interruption: Optional[InterruptionState] = None
     memoryCapture: Optional[MemoryCaptureOutcome] = None
     answer_meta: Optional[AnswerMeta] = None
     reasoningContent: Optional[str] = None

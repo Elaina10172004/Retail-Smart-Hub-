@@ -1,8 +1,14 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
-import { advanceArrival, getArrivalDetail, listArrivals } from './arrival.service';
+import {
+  advanceArrival,
+  createManualArrivalRecords,
+  getArrivalDetail,
+  listArrivals,
+  listManualArrivalCandidateItems,
+} from './arrival.service';
 
 export const arrivalRouter = Router();
 
@@ -19,6 +25,20 @@ arrivalRouter.get('/summary', requirePermission('procurement.manage'), (_req, re
 
 arrivalRouter.get('/', requirePermission('procurement.manage'), (_req, res) => {
   return ok(res, listArrivals());
+});
+
+arrivalRouter.get('/create-options', requirePermission('procurement.manage'), (_req, res) => {
+  return ok(res, listManualArrivalCandidateItems());
+});
+
+arrivalRouter.post('/', requirePermission('procurement.manage'), (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  try {
+    const result = createManualArrivalRecords(items);
+    return ok(res, result, `已创建 ${result.arrivalIds.length} 张验收单。`);
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Create manual arrival records failed');
+  }
 });
 
 arrivalRouter.get('/:id', requirePermission('procurement.manage'), (req, res) => {

@@ -1,4 +1,4 @@
-﻿import { db } from '../../database/db';
+import { db } from '../../database/db';
 import { currentDateString, formatCurrency } from '../../shared/format';
 import { listReceivables } from '../finance/finance.service';
 import { getInventoryAlerts } from '../inventory/inventory.service';

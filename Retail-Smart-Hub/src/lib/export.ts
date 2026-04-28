@@ -32,6 +32,3 @@ export function downloadCsv<T>(filename: string, columns: CsvColumn<T>[], rows: 
   triggerDownload(filename, content, 'text/csv;charset=utf-8;');
 }
 
-export function downloadTextFile(filename: string, content: string) {
-  triggerDownload(filename, content, 'text/plain;charset=utf-8;');
-}

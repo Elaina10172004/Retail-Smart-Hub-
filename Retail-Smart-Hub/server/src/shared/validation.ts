@@ -1,4 +1,4 @@
-﻿import { z, type ZodType } from 'zod';
+import { z, type ZodType } from 'zod';
 import { ApiError } from './api-error';
 
 function buildZodErrorMessage(error: z.ZodError) {

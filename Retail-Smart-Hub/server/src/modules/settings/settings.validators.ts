@@ -1,4 +1,4 @@
-﻿import { z } from 'zod';
+import { z } from 'zod';
 
 const requiredText = (field: string) => z.string().trim().min(1, `${field} is required`);
 

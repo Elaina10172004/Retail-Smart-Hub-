@@ -1,20 +1,22 @@
-import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, Eye, Filter, LoaderCircle, PackageCheck, RefreshCw, Save, Sparkles, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { GroupedDocumentTable } from '@/components/ui/grouped-document-table';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { useAuth } from '@/auth/AuthContext';
-import { buildInboundDocument } from '@/lib/documents';
-import { advanceArrival, fetchArrivals } from '@/services/api/arrival';
+import { buildArrivalDocument, buildInboundDocument } from '@/lib/documents';
+import { advanceArrival, createManualArrival, fetchArrivalDetail, fetchArrivals, fetchManualArrivalCreateOptions } from '@/services/api/arrival';
+import { createManualInbound, fetchManualInboundCreateOptions } from '@/services/api/inbound';
 import { confirmInbound, deleteInbound, fetchInboundDetail, fetchInbounds, saveInboundDraft, updateInboundStatus } from '@/services/api/inbound';
 import type { DocumentPreviewRecord } from '@/types/documents';
-import type { ArrivalRecord } from '@/types/arrival';
-import type { InboundDetailRecord, InboundDetailItem, InboundRecord, SaveInboundDraftPayload, UpdateInboundStatusPayload } from '@/types/inbound';
+import type { ArrivalRecord, CreateManualArrivalItemPayload, ManualArrivalCandidateItem } from '@/types/arrival';
+import type { CreateManualInboundItemPayload, InboundDetailRecord, InboundDetailItem, InboundRecord, ManualInboundCandidateItem, SaveInboundDraftPayload, UpdateInboundStatusPayload } from '@/types/inbound';
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试。';
@@ -30,6 +32,13 @@ interface InboundDraftItemState {
   shelfId: string;
 }
 
+interface CreateGroup<TItem> {
+  purchaseOrderId: string;
+  supplier: string;
+  expectedDate: string;
+  items: TItem[];
+}
+
 function createDraftItems(detail: InboundDetailRecord): InboundDraftItemState[] {
   return detail.itemsDetail.map((item) => ({
     itemId: item.id,
@@ -39,6 +48,19 @@ function createDraftItems(detail: InboundDetailRecord): InboundDraftItemState[] 
   }));
 }
 
+function pad2(value: number) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDraftDateTime(date = new Date()) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function buildDraftDocumentNo(prefix: string) {
+  const now = new Date();
+  return `${prefix}-DRAFT-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+}
+
 export function InboundManagement() {
   const { user, hasPermission } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -46,11 +68,27 @@ export function InboundManagement() {
   const canConfirmInbound = hasPermission('procurement.manage');
   const [arrivals, setArrivals] = useState<ArrivalRecord[]>([]);
   const [inbounds, setInbounds] = useState<InboundRecord[]>([]);
+  const [arrivalCreateOptions, setArrivalCreateOptions] = useState<ManualArrivalCandidateItem[]>([]);
+  const [inboundCreateOptions, setInboundCreateOptions] = useState<ManualInboundCandidateItem[]>([]);
   const [selectedInbound, setSelectedInbound] = useState<InboundDetailRecord | null>(null);
   const [draftItems, setDraftItems] = useState<InboundDraftItemState[]>([]);
   const [previewDocuments, setPreviewDocuments] = useState<DocumentPreviewRecord[]>([]);
   const [previewInitialId, setPreviewInitialId] = useState('');
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [isArrivalCreateOpen, setIsArrivalCreateOpen] = useState(false);
+  const [isInboundCreateOpen, setIsInboundCreateOpen] = useState(false);
+  const [arrivalDraftNo, setArrivalDraftNo] = useState('');
+  const [arrivalDraftAt, setArrivalDraftAt] = useState('');
+  const [inboundDraftNo, setInboundDraftNo] = useState('');
+  const [inboundDraftAt, setInboundDraftAt] = useState('');
+  const [selectedArrivalItems, setSelectedArrivalItems] = useState<Record<string, boolean>>({});
+  const [selectedInboundItems, setSelectedInboundItems] = useState<Record<string, boolean>>({});
+  const [arrivalCreateQty, setArrivalCreateQty] = useState<Record<string, string>>({});
+  const [inboundCreateQty, setInboundCreateQty] = useState<Record<string, string>>({});
+  const [arrivalExpandedIds, setArrivalExpandedIds] = useState<string[]>([]);
+  const [inboundExpandedIds, setInboundExpandedIds] = useState<string[]>([]);
+  const [isCreatingArrival, setIsCreatingArrival] = useState(false);
+  const [isCreatingInbound, setIsCreatingInbound] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -97,13 +135,33 @@ export function InboundManagement() {
     [arrivals, searchTerm],
   );
 
+  const waitingArrivalRecords = useMemo(
+    () => filteredArrivals.filter((item) => item.status === '待验收' || item.status === '部分到货'),
+    [filteredArrivals],
+  );
+  const waitingInboundRecords = useMemo(
+    () => filteredInbounds.filter((item) => item.status === '待入库'),
+    [filteredInbounds],
+  );
+  const completedInboundRecords = useMemo(
+    () => filteredInbounds.filter((item) => item.status === '已入库'),
+    [filteredInbounds],
+  );
+
   const loadInboundHub = async (keepSelectedId?: string) => {
     setIsLoading(true);
     setPageError('');
     try {
-      const [inboundResponse, arrivalResponse] = await Promise.all([fetchInbounds(), fetchArrivals()]);
+      const [inboundResponse, arrivalResponse, arrivalCreateResponse, inboundCreateResponse] = await Promise.all([
+        fetchInbounds(),
+        fetchArrivals(),
+        fetchManualArrivalCreateOptions(),
+        fetchManualInboundCreateOptions(),
+      ]);
       setInbounds(inboundResponse.data);
       setArrivals(arrivalResponse.data);
+      setArrivalCreateOptions(arrivalCreateResponse.data);
+      setInboundCreateOptions(inboundCreateResponse.data);
 
       if (keepSelectedId) {
         const detailResponse = await fetchInboundDetail(keepSelectedId);
@@ -141,6 +199,137 @@ export function InboundManagement() {
       setPageError(getErrorMessage(error));
     } finally {
       setIsDetailLoading(false);
+    }
+  };
+
+  const getArrivalKey = (item: ManualArrivalCandidateItem) => `${item.purchaseOrderId}::${item.purchaseOrderItemId}`;
+  const getInboundKey = (item: ManualInboundCandidateItem) => `${item.purchaseOrderId}::${item.purchaseOrderItemId}`;
+
+  const arrivalCreateGroups = useMemo(() => {
+    const groupMap = new Map<string, CreateGroup<ManualArrivalCandidateItem>>();
+    arrivalCreateOptions.forEach((item) => {
+      const group = groupMap.get(item.purchaseOrderId) ?? {
+        purchaseOrderId: item.purchaseOrderId,
+        supplier: item.supplier,
+        expectedDate: item.expectedDate,
+        items: [],
+      };
+      group.items.push(item);
+      groupMap.set(item.purchaseOrderId, group);
+    });
+    return Array.from(groupMap.values());
+  }, [arrivalCreateOptions]);
+
+  const inboundCreateGroups = useMemo(() => {
+    const groupMap = new Map<string, CreateGroup<ManualInboundCandidateItem>>();
+    inboundCreateOptions.forEach((item) => {
+      const group = groupMap.get(item.purchaseOrderId) ?? {
+        purchaseOrderId: item.purchaseOrderId,
+        supplier: item.supplier,
+        expectedDate: item.expectedDate,
+        items: [],
+      };
+      group.items.push(item);
+      groupMap.set(item.purchaseOrderId, group);
+    });
+    return Array.from(groupMap.values());
+  }, [inboundCreateOptions]);
+
+  const selectedArrivalPayload = useMemo<CreateManualArrivalItemPayload[]>(() => {
+    return arrivalCreateOptions
+      .filter((item) => selectedArrivalItems[getArrivalKey(item)])
+      .map((item) => ({
+        purchaseOrderId: item.purchaseOrderId,
+        purchaseOrderItemId: item.purchaseOrderItemId,
+        arrivedQty: Number(arrivalCreateQty[getArrivalKey(item)] || item.remainingQty),
+      }))
+      .filter((item) => Number.isInteger(item.arrivedQty) && item.arrivedQty > 0);
+  }, [arrivalCreateOptions, arrivalCreateQty, selectedArrivalItems]);
+
+  const selectedInboundPayload = useMemo<CreateManualInboundItemPayload[]>(() => {
+    return inboundCreateOptions
+      .filter((item) => selectedInboundItems[getInboundKey(item)])
+      .map((item) => ({
+        purchaseOrderId: item.purchaseOrderId,
+        purchaseOrderItemId: item.purchaseOrderItemId,
+        arrivedQty: Number(inboundCreateQty[getInboundKey(item)] || item.remainingQty),
+      }))
+      .filter((item) => Number.isInteger(item.arrivedQty) && item.arrivedQty > 0);
+  }, [inboundCreateOptions, inboundCreateQty, selectedInboundItems]);
+
+  const toggleArrivalGroup = (group: CreateGroup<ManualArrivalCandidateItem>, checked: boolean) => {
+    setSelectedArrivalItems((current) => {
+      const next = { ...current };
+      group.items.forEach((item) => {
+        next[getArrivalKey(item)] = checked;
+      });
+      return next;
+    });
+    if (checked) {
+      setArrivalExpandedIds((current) => (current.includes(group.purchaseOrderId) ? current : [...current, group.purchaseOrderId]));
+    }
+  };
+
+  const toggleInboundGroup = (group: CreateGroup<ManualInboundCandidateItem>, checked: boolean) => {
+    setSelectedInboundItems((current) => {
+      const next = { ...current };
+      group.items.forEach((item) => {
+        next[getInboundKey(item)] = checked;
+      });
+      return next;
+    });
+    if (checked) {
+      setInboundExpandedIds((current) => (current.includes(group.purchaseOrderId) ? current : [...current, group.purchaseOrderId]));
+    }
+  };
+
+  const submitManualArrivalCreate = async () => {
+    if (selectedArrivalPayload.length === 0) {
+      setPageError('请选择至少一条待验收明细。');
+      return;
+    }
+    setIsCreatingArrival(true);
+    setPageError('');
+    setActionMessage('');
+    try {
+      const response = await createManualArrival({ items: selectedArrivalPayload });
+      setActionMessage(`已创建验收单：${response.data.arrivalIds.join(' / ')}`);
+      const detailResponses = await Promise.all(response.data.arrivalIds.map((id) => fetchArrivalDetail(id)));
+      openPreview(detailResponses.map((item) => buildArrivalDocument(item.data)), detailResponses[0]?.data.id);
+      setIsArrivalCreateOpen(false);
+      setSelectedArrivalItems({});
+      setArrivalCreateQty({});
+      setArrivalExpandedIds([]);
+      await loadInboundHub(selectedInbound?.id);
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    } finally {
+      setIsCreatingArrival(false);
+    }
+  };
+
+  const submitManualInboundCreate = async () => {
+    if (selectedInboundPayload.length === 0) {
+      setPageError('请选择至少一条待入库明细。');
+      return;
+    }
+    setIsCreatingInbound(true);
+    setPageError('');
+    setActionMessage('');
+    try {
+      const response = await createManualInbound({ items: selectedInboundPayload });
+      setActionMessage(`已创建入库单：${response.data.inboundIds.join(' / ')}`);
+      const detailResponses = await Promise.all(response.data.inboundIds.map((id) => fetchInboundDetail(id)));
+      openPreview(detailResponses.map((item) => buildInboundDocument(item.data)), detailResponses[0]?.data.id);
+      setIsInboundCreateOpen(false);
+      setSelectedInboundItems({});
+      setInboundCreateQty({});
+      setInboundExpandedIds([]);
+      await loadInboundHub(selectedInbound?.id);
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    } finally {
+      setIsCreatingInbound(false);
     }
   };
 
@@ -401,7 +590,29 @@ export function InboundManagement() {
           <h2 className="text-2xl font-bold tracking-tight text-gray-900">到货与入库</h2>
           <p className="mt-1 text-sm text-gray-500">点击单据进入入库工作区，逐行填写合格数量、入库数量和货架后再确认入库。</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => {
+            const nextOpen = !isArrivalCreateOpen;
+            if (nextOpen) {
+              setArrivalDraftNo(buildDraftDocumentNo('RCV'));
+              setArrivalDraftAt(formatDraftDateTime());
+            }
+            setIsArrivalCreateOpen(nextOpen);
+            setIsInboundCreateOpen(false);
+          }}>
+            创建验收单
+          </Button>
+          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => {
+            const nextOpen = !isInboundCreateOpen;
+            if (nextOpen) {
+              setInboundDraftNo(buildDraftDocumentNo('INB'));
+              setInboundDraftAt(formatDraftDateTime());
+            }
+            setIsInboundCreateOpen(nextOpen);
+            setIsArrivalCreateOpen(false);
+          }}>
+            创建入库单
+          </Button>
           <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => void loadInboundHub(selectedInbound?.id)} disabled={isLoading}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
             刷新列表
@@ -411,6 +622,250 @@ export function InboundManagement() {
 
       {pageError ? <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">入库数据处理失败：{pageError}</div> : null}
       {actionMessage ? <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{actionMessage}</div> : null}
+
+      {isArrivalCreateOpen ? (
+        <Card className="border-gray-200 shadow-sm">
+          <CardHeader className="rounded-t-xl border-b border-gray-100 bg-gray-50/50 pb-3">
+            <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+              <CardTitle className="text-lg font-semibold text-gray-800">创建验收单</CardTitle>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => setArrivalExpandedIds(arrivalCreateGroups.map((group) => group.purchaseOrderId))}>全部展开</Button>
+                <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => { setSelectedArrivalItems({}); setArrivalCreateQty({}); }}>清空选择</Button>
+                <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void submitManualArrivalCreate()} disabled={isCreatingArrival}>
+                  {isCreatingArrival ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  生成验收单
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 p-0">
+            <div className="border-b border-gray-100 px-4 pt-4">
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[11px] leading-5 text-slate-500 shadow-sm">
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  <span className="whitespace-nowrap"><span className="text-slate-500">单号：</span><span className="font-semibold text-slate-900">{arrivalDraftNo || 'RCV-DRAFT'}</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">时间：</span><span className="text-slate-700">{arrivalDraftAt || formatDraftDateTime()}</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">状态：</span><span className="font-semibold text-slate-900">草稿</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">可选行数：</span><span className="text-slate-700">{arrivalCreateOptions.length}</span></span>
+                </div>
+              </div>
+            </div>
+            <GroupedDocumentTable
+              groups={arrivalCreateGroups}
+              columns={[
+                { key: 'po', header: '采购单号', renderCell: (group) => group.purchaseOrderId },
+                { key: 'supplier', header: '供应商', renderCell: (group) => group.supplier },
+                { key: 'date', header: '预计到货', renderCell: (group) => group.expectedDate },
+                { key: 'count', header: '可选行数', headerClassName: 'text-right', cellClassName: 'text-right', renderCell: (group) => group.items.length },
+              ]}
+              getGroupId={(group) => group.purchaseOrderId}
+              expandedGroupIds={arrivalExpandedIds}
+              onToggleGroup={(groupId) => setArrivalExpandedIds((current) => (current.includes(groupId) ? current.filter((item) => item !== groupId) : [...current, groupId]))}
+              showSelectionCheckbox
+              isGroupSelected={(group) => group.items.every((item) => Boolean(selectedArrivalItems[getArrivalKey(item)]))}
+              isGroupIndeterminate={(group) => group.items.some((item) => Boolean(selectedArrivalItems[getArrivalKey(item)])) && !group.items.every((item) => Boolean(selectedArrivalItems[getArrivalKey(item)]))}
+              onToggleGroupSelected={toggleArrivalGroup}
+              renderExpandedContent={(group) => (
+                <div className="overflow-x-auto border-t border-gray-200 bg-white">
+                  <table className="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead className="bg-gray-50/80">
+                      <tr>
+                        <th className="w-10 px-2 py-2" />
+                        <th className="px-2 py-2 text-left font-semibold text-gray-900">SKU</th>
+                        <th className="px-2 py-2 text-left font-semibold text-gray-900">商品</th>
+                        <th className="px-2 py-2 text-right font-semibold text-gray-900">未到</th>
+                        <th className="px-2 py-2 text-right font-semibold text-gray-900">本次到货</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 bg-white">
+                      {group.items.map((item) => {
+                        const key = getArrivalKey(item);
+                        return (
+                          <tr key={key}>
+                            <td className="px-2 py-2 text-center">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                checked={Boolean(selectedArrivalItems[key])}
+                                onChange={(event) => setSelectedArrivalItems((current) => ({ ...current, [key]: event.target.checked }))}
+                              />
+                            </td>
+                            <td className="px-2 py-2 text-gray-700">{item.sku}</td>
+                            <td className="px-2 py-2 text-gray-900">{item.productName}</td>
+                            <td className="px-2 py-2 text-right text-gray-600">{item.remainingQty}</td>
+                            <td className="px-2 py-2 text-right">
+                              <Input
+                                type="number"
+                                min="1"
+                                max={item.remainingQty}
+                                value={arrivalCreateQty[key] || String(item.remainingQty)}
+                                onChange={(event) => setArrivalCreateQty((current) => ({ ...current, [key]: event.target.value }))}
+                                className="ml-auto w-28 text-right"
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              loading={isLoading}
+              loadingText="正在加载创建验收单候选数据..."
+              emptyText="当前没有可创建验收单的采购明细。"
+            />
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {isInboundCreateOpen ? (
+        <Card className="border-gray-200 shadow-sm">
+          <CardHeader className="rounded-t-xl border-b border-gray-100 bg-gray-50/50 pb-3">
+            <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+              <CardTitle className="text-lg font-semibold text-gray-800">创建入库单</CardTitle>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  className="border-gray-300 text-gray-700 hover:bg-gray-50"
+                  onClick={() => setInboundExpandedIds(inboundCreateGroups.map((group) => group.purchaseOrderId))}
+                  disabled={inboundCreateGroups.length === 0}
+                >
+                  全部展开
+                </Button>
+                <Button
+                  variant="outline"
+                  className="border-gray-300 text-gray-700 hover:bg-gray-50"
+                  onClick={() => { setSelectedInboundItems({}); setInboundCreateQty({}); }}
+                  disabled={inboundCreateGroups.length === 0}
+                >
+                  清空选择
+                </Button>
+                <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void submitManualInboundCreate()} disabled={isCreatingInbound || inboundCreateGroups.length === 0}>
+                  {isCreatingInbound ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  生成入库单
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 p-0">
+            <div className="border-b border-gray-100 px-4 pt-4">
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[11px] leading-5 text-slate-500 shadow-sm">
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  <span className="whitespace-nowrap"><span className="text-slate-500">单号：</span><span className="font-semibold text-slate-900">{inboundDraftNo || 'INB-DRAFT'}</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">时间：</span><span className="text-slate-700">{inboundDraftAt || formatDraftDateTime()}</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">状态：</span><span className="font-semibold text-slate-900">草稿</span></span>
+                  <span className="whitespace-nowrap"><span className="text-slate-500">可选行数：</span><span className="text-slate-700">{inboundCreateOptions.length}</span></span>
+                </div>
+              </div>
+            </div>
+            {inboundCreateGroups.length > 0 ? (
+              <GroupedDocumentTable
+                groups={inboundCreateGroups}
+                columns={[
+                  { key: 'po', header: '采购单号', renderCell: (group) => group.purchaseOrderId },
+                  { key: 'supplier', header: '供应商', renderCell: (group) => group.supplier },
+                  { key: 'date', header: '预计到货', renderCell: (group) => group.expectedDate },
+                  { key: 'count', header: '可选行数', headerClassName: 'text-right', cellClassName: 'text-right', renderCell: (group) => group.items.length },
+                ]}
+                getGroupId={(group) => group.purchaseOrderId}
+                expandedGroupIds={inboundExpandedIds}
+                onToggleGroup={(groupId) => setInboundExpandedIds((current) => (current.includes(groupId) ? current.filter((item) => item !== groupId) : [...current, groupId]))}
+                showSelectionCheckbox
+                isGroupSelected={(group) => group.items.every((item) => Boolean(selectedInboundItems[getInboundKey(item)]))}
+                isGroupIndeterminate={(group) => group.items.some((item) => Boolean(selectedInboundItems[getInboundKey(item)])) && !group.items.every((item) => Boolean(selectedInboundItems[getInboundKey(item)]))}
+                onToggleGroupSelected={toggleInboundGroup}
+                renderExpandedContent={(group) => (
+                  <div className="overflow-x-auto border-t border-gray-200 bg-white">
+                    <table className="min-w-full divide-y divide-gray-200 text-sm">
+                      <thead className="bg-gray-50/80">
+                        <tr>
+                          <th className="w-10 px-2 py-2" />
+                          <th className="px-2 py-2 text-left font-semibold text-gray-900">SKU</th>
+                          <th className="px-2 py-2 text-left font-semibold text-gray-900">商品</th>
+                          <th className="px-2 py-2 text-right font-semibold text-gray-900">未入库</th>
+                          <th className="px-2 py-2 text-right font-semibold text-gray-900">本次到货</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200 bg-white">
+                        {group.items.map((item) => {
+                          const key = getInboundKey(item);
+                          return (
+                            <tr key={key}>
+                              <td className="px-2 py-2 text-center">
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                  checked={Boolean(selectedInboundItems[key])}
+                                  onChange={(event) => setSelectedInboundItems((current) => ({ ...current, [key]: event.target.checked }))}
+                                />
+                              </td>
+                              <td className="px-2 py-2 text-gray-700">{item.sku}</td>
+                              <td className="px-2 py-2 text-gray-900">{item.productName}</td>
+                              <td className="px-2 py-2 text-right text-gray-600">{item.remainingQty}</td>
+                              <td className="px-2 py-2 text-right">
+                                <Input
+                                  type="number"
+                                  min="1"
+                                  max={item.remainingQty}
+                                  value={inboundCreateQty[key] || String(item.remainingQty)}
+                                  onChange={(event) => setInboundCreateQty((current) => ({ ...current, [key]: event.target.value }))}
+                                  className="ml-auto w-28 text-right"
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                loading={isLoading}
+                loadingText="正在加载创建入库单候选数据..."
+                emptyText="当前没有可创建入库单的采购明细。"
+              />
+            ) : waitingInboundRecords.length > 0 ? (
+              <div className="space-y-3 p-4">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  当前没有新的入库候选明细。下方已经存在待入库单据，直接进入这些单据继续处理即可。
+                </div>
+                <div className="overflow-x-auto rounded-xl border border-gray-200">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-gray-50/80 hover:bg-gray-50/80">
+                        <TableHead className="font-semibold text-gray-900">入库单号</TableHead>
+                        <TableHead className="font-semibold text-gray-900">收货单号</TableHead>
+                        <TableHead className="font-semibold text-gray-900">供应商</TableHead>
+                        <TableHead className="font-semibold text-gray-900 text-right">入库数量</TableHead>
+                        <TableHead className="font-semibold text-gray-900 text-center">状态</TableHead>
+                        <TableHead className="text-right font-semibold text-gray-900">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {waitingInboundRecords.slice(0, 5).map((inbound) => (
+                        <TableRow key={inbound.id}>
+                          <TableCell className="font-medium text-blue-600">{inbound.id}</TableCell>
+                          <TableCell className="text-gray-500">{inbound.rcvId}</TableCell>
+                          <TableCell className="text-gray-900">{inbound.supplier}</TableCell>
+                          <TableCell className="text-right text-gray-900">{inbound.items}</TableCell>
+                          <TableCell className="text-center">
+                            <Badge variant={inbound.status === '已入库' ? 'success' : 'warning'}>{inbound.status}</Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => void handleOpenInboundWorkspace(inbound.id)}>
+                              进入单据页
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            ) : (
+              <div className="px-6 py-10 text-center text-sm text-gray-500">当前没有可创建入库单的采购明细。</div>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {selectedInbound || isDetailLoading ? (
         <Card className="border-gray-200 shadow-sm">
@@ -564,15 +1019,15 @@ export function InboundManagement() {
 
       <Card className="border-gray-200 shadow-sm">
         <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
-          <CardTitle className="text-lg font-semibold text-gray-800">到货验收列表</CardTitle>
+          <CardTitle className="text-lg font-semibold text-gray-800">待验收 / 部分验收</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">到货单号</TableHead><TableHead className="font-semibold text-gray-900">采购单号</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">实到/应到</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
             <TableBody>
               {isLoading ? <TableRow><TableCell colSpan={6} className="h-20 text-center text-sm text-gray-500">正在加载到货数据...</TableCell></TableRow> : null}
-              {!isLoading && filteredArrivals.length === 0 ? <TableRow><TableCell colSpan={6} className="h-20 text-center text-sm text-gray-500">当前筛选条件下没有到货记录。</TableCell></TableRow> : null}
-              {!isLoading && filteredArrivals.map((arrival) => (
+              {!isLoading && waitingArrivalRecords.length === 0 ? <TableRow><TableCell colSpan={6} className="h-20 text-center text-sm text-gray-500">当前筛选条件下没有待验收记录。</TableCell></TableRow> : null}
+              {!isLoading && waitingArrivalRecords.map((arrival) => (
                 <TableRow key={arrival.id} className="hover:bg-blue-50/30 transition-colors">
                   <TableCell className="font-medium text-blue-600">{arrival.id}</TableCell>
                   <TableCell className="text-gray-500">{arrival.poId}</TableCell>
@@ -583,7 +1038,6 @@ export function InboundManagement() {
                     <RowActionMenu
                       items={[
                         { id: 'arrival-filter', label: '按同供应商筛选', icon: Filter, onSelect: () => setSearchTerm(arrival.supplier) },
-                        { id: 'arrival-advance', label: '推进到货状态', icon: ArrowRight, onSelect: () => void handleAdvanceArrival(arrival), disabled: !(arrival.status === '待验收' || arrival.status === '部分到货') || activeId === arrival.id || !canConfirmInbound },
                       ]}
                     />
                   </TableCell>
@@ -596,7 +1050,8 @@ export function InboundManagement() {
 
       <Card className="border-gray-200 shadow-sm">
         <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
-          <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <CardTitle className="text-lg font-semibold text-gray-800">待入库 / 部分入库</CardTitle>
             <div className="flex flex-1 gap-4 w-full flex-wrap">
               <div className="relative w-full md:w-72"><Input placeholder="搜索入库单号、收货单号、供应商、库位..." className="bg-white border-gray-300 focus-visible:ring-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /></div>
               <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="">所有状态</option><option value="待入库">待入库</option><option value="已入库">已入库</option></select>
@@ -608,8 +1063,48 @@ export function InboundManagement() {
             <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">入库单号</TableHead><TableHead className="font-semibold text-gray-900">收货单号</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">入库数量</TableHead><TableHead className="font-semibold text-gray-900">仓库</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
             <TableBody>
               {isLoading ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">正在加载入库数据...</TableCell></TableRow> : null}
-              {!isLoading && filteredInbounds.length === 0 ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有入库记录。</TableCell></TableRow> : null}
-              {!isLoading && filteredInbounds.map((inbound) => (
+              {!isLoading && waitingInboundRecords.length === 0 ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有待入库记录。</TableCell></TableRow> : null}
+              {!isLoading && waitingInboundRecords.map((inbound) => (
+                <TableRow key={inbound.id} className="hover:bg-blue-50/30 transition-colors">
+                  <TableCell className="font-medium text-blue-600">{inbound.id}</TableCell>
+                  <TableCell className="text-gray-500">{inbound.rcvId}</TableCell>
+                  <TableCell className="text-gray-900">{inbound.supplier}</TableCell>
+                  <TableCell className="text-right text-gray-900">{inbound.items}</TableCell>
+                  <TableCell className="text-gray-500">{inbound.warehouse}</TableCell>
+                  <TableCell className="text-center"><Badge variant={inbound.status === '已入库' ? 'success' : 'warning'}>{inbound.status}</Badge></TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button variant="ghost" size="icon" className="text-gray-500 hover:bg-blue-50 hover:text-blue-600" onClick={() => void handleOpenInboundWorkspace(inbound.id)}>
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <RowActionMenu
+                        items={[
+                          { id: 'inbound-open', label: '进入单据页', icon: Eye, onSelect: () => void handleOpenInboundWorkspace(inbound.id) },
+                          { id: 'inbound-preview', label: '打印入库单', icon: PackageCheck, onSelect: () => void handlePreviewInboundDocument(inbound.id) },
+                          { id: 'inbound-force-status', label: '强制修改状态', icon: Sparkles, onSelect: () => void handleForceInboundStatus(inbound), disabled: !isSuperAdmin },
+                          { id: 'inbound-delete', label: '删除入库单', icon: Trash2, onSelect: () => void handleDeleteInbound(inbound), disabled: !isSuperAdmin || activeId === inbound.id, tone: 'danger' },
+                        ]}
+                      />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+            </Table>
+        </CardContent>
+      </Card>
+
+      <Card className="border-gray-200 shadow-sm">
+        <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
+          <CardTitle className="text-lg font-semibold text-gray-800">已入库</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">入库单号</TableHead><TableHead className="font-semibold text-gray-900">收货单号</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">入库数量</TableHead><TableHead className="font-semibold text-gray-900">仓库</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
+            <TableBody>
+              {isLoading ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">正在加载入库数据...</TableCell></TableRow> : null}
+              {!isLoading && completedInboundRecords.length === 0 ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有已入库记录。</TableCell></TableRow> : null}
+              {!isLoading && completedInboundRecords.map((inbound) => (
                 <TableRow key={inbound.id} className="hover:bg-blue-50/30 transition-colors">
                   <TableCell className="font-medium text-blue-600">{inbound.id}</TableCell>
                   <TableCell className="text-gray-500">{inbound.rcvId}</TableCell>

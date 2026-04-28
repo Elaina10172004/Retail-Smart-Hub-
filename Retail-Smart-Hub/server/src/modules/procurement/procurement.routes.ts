@@ -1,7 +1,8 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { requirePermission } from '../../shared/auth';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { fail, ok } from '../../shared/response';
+import { getProcurementArrivalWorkspace, registerProcurementArrival } from '../arrival/arrival.service';
 import {
   createProcurementOrder,
   deleteProcurementOrder,
@@ -54,6 +55,24 @@ procurementRouter.get('/:id', requirePermission('procurement.manage'), (req, res
   }
 
   return ok(res, detail);
+});
+
+procurementRouter.get('/:id/arrival-workspace', requirePermission('procurement.manage'), (req, res) => {
+  const detail = getProcurementArrivalWorkspace(req.params.id);
+  if (!detail) {
+    return fail(res, 404, 'Procurement order not found');
+  }
+
+  return ok(res, detail);
+});
+
+procurementRouter.post('/:id/arrival', requirePermission('procurement.manage'), (req, res) => {
+  try {
+    const detail = registerProcurementArrival(req.params.id, req.body);
+    return ok(res, detail, '到货登记已完成，已进入验收入库流程。');
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Register procurement arrival failed');
+  }
 });
 
 procurementRouter.post('/generate-shortage-orders', requirePermission('procurement.manage'), (_req, res) => {

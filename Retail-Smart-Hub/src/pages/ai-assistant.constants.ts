@@ -1,4 +1,4 @@
-﻿export const AI_SESSION_UPDATE_EVENT = 'retail-smart-hub.ai.sessions-updated';
+export const AI_SESSION_UPDATE_EVENT = 'retail-smart-hub.ai.sessions-updated';
 
 export const AI_GREETING_CANDIDATES = [
   '嗨，欢迎回来。可以直接问我订单、库存、采购、财务或报表。',

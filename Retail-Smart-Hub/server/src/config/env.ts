@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
@@ -103,7 +103,7 @@ function normalizeNodeEnv(value: string | undefined) {
 }
 
 function normalizeAiProvider(value: string | undefined) {
-  const normalized = (value || 'deepseek').trim().toLowerCase();
+  const normalized = (value || 'openai').trim().toLowerCase();
   if (normalized === 'openai') {
     return 'openai';
   }
@@ -157,7 +157,7 @@ const deepseekApiKey = process.env.DEEPSEEK_API_KEY || '';
 const deepseekModel = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
 const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com';
 const openaiApiKey = process.env.OPENAI_API_KEY || '';
-const openaiModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const openaiModel = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
 const openaiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
 const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
@@ -192,6 +192,15 @@ const aiLargeBaseUrl = (
   process.env.AI_LARGE_BASE_URL || resolveProviderValue(aiLargeProvider, deepseekBaseUrl, openaiBaseUrl, geminiBaseUrl)
 ).trim();
 
+export const aiBootstrapSecrets = {
+  deepseekApiKey,
+  openaiApiKey,
+  geminiApiKey,
+  tavilyApiKey,
+  aiSmallApiKey,
+  aiLargeApiKey,
+} as const;
+
 export const env = {
   port: toNumber(process.env.API_PORT, 4000),
   host: process.env.API_HOST?.trim() || '127.0.0.1',
@@ -202,7 +211,6 @@ export const env = {
   aiSmallProvider,
   aiLargeProvider,
   aiRuntime: (process.env.AI_RUNTIME || 'python').trim().toLowerCase(),
-  aiLayeredAgentEnabled: toBoolean(process.env.AI_LAYERED_AGENT_ENABLED, true),
   aiPythonHost: process.env.AI_PYTHON_HOST?.trim() || '127.0.0.1',
   aiPythonPort: toNumber(process.env.AI_PYTHON_PORT, 18080),
   aiPythonCommand: process.env.AI_PYTHON_COMMAND?.trim() || 'python',

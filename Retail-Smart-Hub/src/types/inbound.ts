@@ -38,6 +38,7 @@ export interface InboundDetailRecord extends InboundRecord {
   poId: string;
   warehouseId: string;
   completedAt?: string;
+  sourcePurchaseOrderIds?: string[];
   shelfOptions: InboundShelfOption[];
   itemsDetail: InboundDetailItem[];
 }
@@ -60,4 +61,35 @@ export interface SaveInboundDraftPayload {
 export interface DeleteInboundResponse {
   id: string;
   deleted: boolean;
+}
+
+export interface ManualInboundCandidateItem {
+  supplierId: string;
+  purchaseOrderId: string;
+  purchaseOrderItemId: string;
+  supplier: string;
+  expectedDate: string;
+  procurementStatus: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  orderedQty: number;
+  arrivedQty: number;
+  remainingQty: number;
+  unitCost: number;
+}
+
+export interface CreateManualInboundItemPayload {
+  purchaseOrderId: string;
+  purchaseOrderItemId: string;
+  arrivedQty: number;
+}
+
+export interface CreateManualInboundPayload {
+  items: CreateManualInboundItemPayload[];
+}
+
+export interface CreateManualInboundResult {
+  inboundIds: string[];
+  arrivalIds: string[];
 }

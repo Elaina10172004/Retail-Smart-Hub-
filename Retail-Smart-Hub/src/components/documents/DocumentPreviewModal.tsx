@@ -34,14 +34,9 @@ function alignClass(align: DocumentColumnAlign = 'left') {
 function buildFieldMarkup(fields: DocumentPreviewField[]) {
   return fields
     .map(
-      (field) => `
-        <div class="meta-card">
-          <div class="meta-label">${escapeHtml(field.label)}</div>
-          <div class="meta-value${field.emphasize ? ' emphasize' : ''}">${escapeHtml(field.value)}</div>
-        </div>
-      `,
+      (field) => `<span class="meta-item${field.emphasize ? ' emphasize' : ''}">${escapeHtml(field.label)}：${escapeHtml(field.value)}</span>`,
     )
-    .join('');
+    .join('<span class="meta-sep">·</span>');
 }
 
 function buildPrintHtml(document: DocumentPreviewRecord) {
@@ -128,28 +123,22 @@ function buildPrintHtml(document: DocumentPreviewRecord) {
             margin: 18px 0 10px;
           }
           .meta-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 10px;
-          }
-          .meta-card {
-            border: 1px solid #dbe4f0;
-            border-radius: 8px;
-            padding: 10px 12px;
-            min-height: 54px;
-          }
-          .meta-label {
-            font-size: 11px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 2px 8px;
+            font-size: 10px;
             color: #64748b;
-            margin-bottom: 6px;
           }
-          .meta-value {
-            font-size: 14px;
-            color: #0f172a;
-            word-break: break-word;
+          .meta-item {
+            white-space: nowrap;
           }
-          .meta-value.emphasize {
+          .meta-item.emphasize {
             font-weight: 700;
+            color: #0f172a;
+          }
+          .meta-sep {
+            color: #cbd5e1;
           }
           table {
             width: 100%;
@@ -228,17 +217,11 @@ function buildPrintHtml(document: DocumentPreviewRecord) {
             <div class="status-pill">${escapeHtml(document.status)}</div>
           </div>
 
-          <div class="section-title">单据头信息</div>
-          <div class="meta-grid">${buildFieldMarkup(document.headerFields)}</div>
-
-          <div class="section-title">业务对象</div>
-          <div class="meta-grid">${buildFieldMarkup(document.partyFields)}</div>
-
-          ${
-            document.referenceFields && document.referenceFields.length > 0
-              ? `<div class="section-title">关联信息</div><div class="meta-grid">${buildFieldMarkup(document.referenceFields)}</div>`
-              : ''
-          }
+          <div class="meta-grid">${buildFieldMarkup([
+            ...document.headerFields,
+            ...document.partyFields,
+            ...(document.referenceFields || []),
+          ])}</div>
 
           <div class="section-title">商品明细</div>
           <table>

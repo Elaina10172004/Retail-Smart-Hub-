@@ -93,6 +93,13 @@ def create_app(
     async def chat_stream(payload: ChatRequest, runtime: AgentRuntime = Depends(get_runtime)) -> StreamingResponse:
         async def event_stream() -> Any:
             try:
+                initial_message = (
+                    "正在读取附件并分析内容...\n\n"
+                    if payload.attachments
+                    else "正在分析请求...\n\n"
+                )
+                yield f"event: delta\ndata: {json_dumps({'replyDelta': initial_message})}\n\n"
+
                 result = await run_chat(payload, runtime=runtime, model_requester=model_requester)
                 meta = {
                     "toolCalls": [item.model_dump() for item in result.toolCalls],
@@ -100,6 +107,8 @@ def create_app(
                     "webSources": [item.model_dump() for item in result.webSources],
                     "pendingAction": result.pendingAction,
                     "approval": result.approval,
+                    "clarification": result.clarification.model_dump() if result.clarification else None,
+                    "interruption": result.interruption.model_dump() if result.interruption else None,
                     "answer_meta": result.answer_meta.model_dump() if result.answer_meta else None,
                     "configured": result.configured,
                     "provider": result.provider,
@@ -109,13 +118,11 @@ def create_app(
                 }
                 yield f"event: meta\ndata: {json_dumps(meta)}\n\n"
 
-                for piece in split_for_stream(result.reasoningContent or "", 60):
+                for piece in split_for_stream(result.reasoningContent or ""):
                     yield f"event: delta\ndata: {json_dumps({'reasoningDelta': piece})}\n\n"
-                    await asyncio.sleep(0)
 
-                for piece in split_for_stream(result.reply, 60):
+                for piece in split_for_stream(result.reply):
                     yield f"event: delta\ndata: {json_dumps({'replyDelta': piece})}\n\n"
-                    await asyncio.sleep(0)
 
                 yield f"event: done\ndata: {json_dumps(result.model_dump())}\n\n"
             except Exception as error:

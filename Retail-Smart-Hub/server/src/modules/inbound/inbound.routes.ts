@@ -1,12 +1,14 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
 import {
   confirmInbound,
+  createManualInboundOrders,
   deleteInbound,
   forceUpdateInboundStatus,
   getInboundDetail,
+  listManualInboundCandidateItems,
   listInbounds,
   saveInboundDraft,
   type SaveInboundDraftItemPayload,
@@ -27,6 +29,20 @@ inboundRouter.get('/summary', requirePermission('procurement.manage'), (_req, re
 
 inboundRouter.get('/', requirePermission('procurement.manage'), (_req, res) => {
   return ok(res, listInbounds());
+});
+
+inboundRouter.get('/create-options', requirePermission('procurement.manage'), (_req, res) => {
+  return ok(res, listManualInboundCandidateItems());
+});
+
+inboundRouter.post('/', requirePermission('procurement.manage'), (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  try {
+    const result = createManualInboundOrders(items);
+    return ok(res, result, `已创建 ${result.inboundIds.length} 张入库单，并推进对应到货状态。`);
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Create manual inbound orders failed');
+  }
 });
 
 inboundRouter.get('/:id', requirePermission('procurement.manage'), (req, res) => {

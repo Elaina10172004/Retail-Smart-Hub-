@@ -1,0 +1,3 @@
+display_name: RetailFlow Analysis
+short_description: 业务分析与状态解释
+default_prompt: 分析当前业务状态并解释异常原因

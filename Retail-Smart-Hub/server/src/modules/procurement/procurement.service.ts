@@ -1,4 +1,4 @@
-import {
+﻿import {
   appendAuditLog,
   appendInventoryMovement,
   createPayableForPurchaseOrder,
@@ -72,6 +72,18 @@ interface SuggestedItem {
 }
 
 const ALLOWED_PROCUREMENT_STATUSES = new Set(['待审核', '采购中', '部分到货', '已完成', '已取消']);
+const MIXED_SUPPLIER_ID = 'SUP-MIXED';
+const MIXED_SUPPLIER_NAME = '多供应商';
+
+function normalizeProcurementStatus(status: string) {
+  return status === '部分到货' ? '到货' : status;
+}
+
+function ensureMixedSupplierExists() {
+  db.prepare(
+    'INSERT OR IGNORE INTO suppliers (id, name, contact_name, phone, lead_time_days, status) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(MIXED_SUPPLIER_ID, MIXED_SUPPLIER_NAME, '', '', 0, 'active');
+}
 
 export interface ProcurementSuggestionSummary {
   lowStockItemCount: number;
@@ -120,6 +132,7 @@ export interface CreateProcurementNewProductPayload {
 
 export interface CreateProcurementOrderExistingItemPayload {
   mode: 'existing';
+  supplierId?: string;
   productId: string;
   quantity: number;
   unitCost: number;
@@ -127,6 +140,7 @@ export interface CreateProcurementOrderExistingItemPayload {
 
 export interface CreateProcurementOrderNewItemPayload {
   mode: 'new';
+  supplierId?: string;
   quantity: number;
   unitCost: number;
   newProduct: CreateProcurementNewProductPayload;
@@ -311,6 +325,7 @@ function loadSuggestedItems() {
 }
 
 export function getProcurementFormOptions(): ProcurementFormOptions {
+  ensureMixedSupplierExists();
   const suppliers = db.prepare<ProcurementFormSupplierOption>(`
     SELECT
       id,
@@ -318,8 +333,9 @@ export function getProcurementFormOptions(): ProcurementFormOptions {
       lead_time_days as leadTimeDays
     FROM suppliers
     WHERE status = 'active'
+      AND id <> ?
     ORDER BY name COLLATE NOCASE ASC, id ASC
-  `).all();
+  `).all(MIXED_SUPPLIER_ID);
 
   const products = db.prepare<ManualProcurementProductRow>(`
     SELECT
@@ -344,10 +360,19 @@ export function getProcurementFormOptions(): ProcurementFormOptions {
 }
 
 export function listProcurementOrders() {
+  ensureMixedSupplierExists();
   const rows = db.prepare<ProcurementRow>(`
     SELECT
       po.id,
-      s.name as supplier,
+      CASE
+        WHEN (
+          SELECT COUNT(DISTINCT p2.preferred_supplier_id)
+          FROM purchase_order_items poi2
+          JOIN products p2 ON p2.id = poi2.product_id
+          WHERE poi2.purchase_order_id = po.id
+        ) > 1 THEN ?
+        ELSE s.name
+      END as supplier,
       po.created_at as createDate,
       po.expected_at as expectedDate,
       po.status,
@@ -358,19 +383,29 @@ export function listProcurementOrders() {
     LEFT JOIN purchase_order_items poi ON poi.purchase_order_id = po.id
     GROUP BY po.id, s.name, po.created_at, po.expected_at, po.status, po.source
     ORDER BY po.created_at DESC, po.id DESC
-  `).all();
+  `).all(MIXED_SUPPLIER_NAME);
 
   return rows.map((row) => ({
     ...row,
+    status: normalizeProcurementStatus(row.status),
     amount: formatCurrency(row.amount),
   }));
 }
 
 export function getProcurementOrderDetail(id: string): ProcurementOrderDetail | null {
+  ensureMixedSupplierExists();
   const row = db.prepare<ProcurementRow>(`
     SELECT
       po.id,
-      s.name as supplier,
+      CASE
+        WHEN (
+          SELECT COUNT(DISTINCT p2.preferred_supplier_id)
+          FROM purchase_order_items poi2
+          JOIN products p2 ON p2.id = poi2.product_id
+          WHERE poi2.purchase_order_id = po.id
+        ) > 1 THEN ?
+        ELSE s.name
+      END as supplier,
       po.created_at as createDate,
       po.expected_at as expectedDate,
       po.status,
@@ -382,7 +417,7 @@ export function getProcurementOrderDetail(id: string): ProcurementOrderDetail | 
     LEFT JOIN purchase_order_items poi ON poi.purchase_order_id = po.id
     WHERE po.id = ?
     GROUP BY po.id, s.name, po.created_at, po.expected_at, po.status, po.source, po.remark
-  `).get(id);
+  `).get(MIXED_SUPPLIER_NAME, id);
 
   if (!row) {
     return null;
@@ -407,7 +442,7 @@ export function getProcurementOrderDetail(id: string): ProcurementOrderDetail | 
     supplier: row.supplier,
     createDate: row.createDate,
     expectedDate: row.expectedDate,
-    status: row.status,
+    status: normalizeProcurementStatus(row.status),
     amount: formatCurrency(row.amount),
     source: row.source,
     remark: row.remark ?? undefined,
@@ -421,20 +456,20 @@ export function getProcurementOrderDetail(id: string): ProcurementOrderDetail | 
 
 export function getProcurementSuggestions(): ProcurementSuggestionSummary {
   const items = loadSuggestedItems();
-  const suppliers = new Set(items.map((item) => item.supplierId));
 
   return {
     lowStockItemCount: items.length,
-    recommendedOrderCount: suppliers.size,
+    recommendedOrderCount: items.length > 0 ? 1 : 0,
     recommendedSkus: items.map((item) => item.sku),
     message:
       items.length > 0
-        ? `检测到 ${items.length} 个商品低于安全库存，建议生成 ${suppliers.size} 张补货采购单。`
+        ? `检测到 ${items.length} 个商品低于安全库存，建议生成 1 张补货采购单。`
         : '当前库存健康，无需新增采购单。',
   };
 }
 
 export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
+  ensureMixedSupplierExists();
   const supplierId = payload.supplierId.trim();
   const expectedDate = payload.expectedDate.trim();
   const remark = payload.remark?.trim() || null;
@@ -452,7 +487,12 @@ export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
   }
 
   const uniqueProductIds = new Set<string>();
-  payload.items.forEach((item, index) => {
+  const resolvedItems = payload.items.map((item, index) => {
+    const resolvedSupplierId = item.supplierId?.trim() || supplierId;
+    if (!resolvedSupplierId) {
+      throw new Error(`items[${index}].supplierId is required`);
+    }
+
     if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
       throw new Error(`items[${index}].quantity must be a positive integer`);
     }
@@ -469,29 +509,35 @@ export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
         throw new Error('duplicate product lines are not allowed');
       }
       uniqueProductIds.add(item.productId.trim());
-      return;
+      return { ...item, supplierId: resolvedSupplierId };
     }
 
     if (item.mode === 'new') {
       if (!normalizeOptionalText(item.newProduct?.name)) {
         throw new Error(`items[${index}].newProduct.name is required`);
       }
-      return;
+      return { ...item, supplierId: resolvedSupplierId };
     }
 
     throw new Error(`items[${index}].mode is invalid`);
   });
 
-  const supplier = db.prepare<{ id: string; name: string }>(
-    "SELECT id, name FROM suppliers WHERE id = ? AND status = 'active'",
-  ).get(supplierId);
-  if (!supplier) {
-    throw new Error('Active supplier not found');
+  const uniqueSupplierIds = Array.from(new Set(resolvedItems.map((item) => item.supplierId?.trim() || supplierId)));
+  const supplierRows = uniqueSupplierIds.length
+    ? db
+        .prepare<{ id: string; name: string }>(
+          `SELECT id, name FROM suppliers WHERE id IN (${uniqueSupplierIds.map(() => '?').join(', ')}) AND status = 'active'`,
+        )
+        .all(...uniqueSupplierIds)
+    : [];
+  if (supplierRows.length !== uniqueSupplierIds.length) {
+    throw new Error('One or more active suppliers were not found');
   }
+  const supplierMap = new Map(supplierRows.map((item) => [item.id, item.name]));
 
-  const existingItems = payload.items.filter(
-    (item): item is CreateProcurementOrderExistingItemPayload => item.mode === 'existing',
-  );
+  const existingItems = resolvedItems.filter((item) => item.mode === 'existing') as Array<
+    CreateProcurementOrderExistingItemPayload & { supplierId: string }
+  >;
   const productIds = existingItems.map((item) => item.productId.trim());
   const products = productIds.length
     ? db.prepare<ManualProcurementProductRow>(`
@@ -521,31 +567,36 @@ export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
     if (!product) {
       throw new Error(`Product ${item.productId} is not available`);
     }
-    if (product.preferredSupplierId !== supplierId) {
+    const rowSupplierId = item.supplierId?.trim() || supplierId;
+    if (product.preferredSupplierId !== rowSupplierId) {
       throw new Error(`Product ${product.sku} does not belong to the selected supplier`);
     }
   });
 
   const today = currentDateString();
   const poId = nextDocumentId('purchase_orders', 'PO', today);
+  const distinctSupplierIds = new Set(resolvedItems.map((item) => item.supplierId?.trim() || supplierId));
+  const orderSupplierId = distinctSupplierIds.size > 1 ? MIXED_SUPPLIER_ID : Array.from(distinctSupplierIds)[0] || supplierId;
+  const orderSupplierName = orderSupplierId === MIXED_SUPPLIER_ID ? MIXED_SUPPLIER_NAME : supplierMap.get(orderSupplierId) || MIXED_SUPPLIER_NAME;
 
   const transaction = db.transaction(() => {
     const createdProducts: QuickCreateProductResult[] = [];
 
     db.prepare(
       'INSERT INTO purchase_orders (id, supplier_id, created_at, expected_at, status, source, remark) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run(poId, supplierId, today, expectedDate, '待审核', '手工创建', remark);
+    ).run(poId, orderSupplierId, today, expectedDate, '待审核', '手工创建', remark);
 
     const insertItem = db.prepare(
       'INSERT INTO purchase_order_items (id, purchase_order_id, product_id, ordered_qty, arrived_qty, unit_cost) VALUES (?, ?, ?, ?, ?, ?)',
     );
 
-    payload.items.forEach((item, index) => {
+    resolvedItems.forEach((item, index) => {
+      const rowSupplierId = item.supplierId?.trim() || supplierId;
       const productId =
         item.mode === 'existing'
           ? item.productId.trim()
           : (() => {
-              const created = createQuickProcurementProduct(supplierId, item);
+              const created = createQuickProcurementProduct(rowSupplierId, item);
               createdProducts.push(created);
               return created.id;
             })();
@@ -559,9 +610,9 @@ export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
     });
 
     appendAuditLog('create_purchase_order_manual', 'purchase_order', poId, {
-      supplierId,
-      supplierName: supplier.name,
-      itemCount: payload.items.length,
+      supplierId: orderSupplierId,
+      supplierName: orderSupplierName,
+      itemCount: resolvedItems.length,
       expectedDate,
       remark,
       createdProducts,
@@ -573,18 +624,17 @@ export function createProcurementOrder(payload: CreateProcurementOrderPayload) {
 }
 
 export function generateSuggestedPurchaseOrders() {
+  ensureMixedSupplierExists();
   const items = loadSuggestedItems();
   if (items.length === 0) {
     return [] as GeneratedPurchaseOrder[];
   }
 
   const today = currentDateString();
-  const groups = new Map<string, SuggestedItem[]>();
-  items.forEach((item) => {
-    const current = groups.get(item.supplierId) ?? [];
-    current.push(item);
-    groups.set(item.supplierId, current);
-  });
+  const distinctSupplierIds = Array.from(new Set(items.map((item) => item.supplierId)));
+  const orderSupplierId = distinctSupplierIds.length > 1 ? MIXED_SUPPLIER_ID : distinctSupplierIds[0] || MIXED_SUPPLIER_ID;
+  const expectedDate = addDays(today, Math.max(...items.map((item) => item.leadTimeDays)));
+  const totalAmount = items.reduce((sum, item) => sum + item.recommendQty * item.unitCost, 0);
 
   const transaction = db.transaction(() => {
     const created: GeneratedPurchaseOrder[] = [];
@@ -595,43 +645,43 @@ export function generateSuggestedPurchaseOrders() {
       'INSERT INTO purchase_order_items (id, purchase_order_id, product_id, ordered_qty, arrived_qty, unit_cost) VALUES (?, ?, ?, ?, ?, ?)',
     );
 
-    groups.forEach((supplierItems, supplierId) => {
-      const poId = nextDocumentId('purchase_orders', 'PO', today);
-      const expectedDate = addDays(today, supplierItems[0].leadTimeDays);
-      const totalAmount = supplierItems.reduce((sum, item) => sum + item.recommendQty * item.unitCost, 0);
+    const poId = nextDocumentId('purchase_orders', 'PO', today);
+    const supplierName =
+      orderSupplierId === MIXED_SUPPLIER_ID
+        ? MIXED_SUPPLIER_NAME
+        : items.find((item) => item.supplierId === orderSupplierId)?.supplierName || MIXED_SUPPLIER_NAME;
 
-      insertPo.run(
-        poId,
-        supplierId,
-        today,
-        expectedDate,
-        '待审核',
-        '低库存自动补货',
-        `由系统自动生成，包含 ${supplierItems.length} 个补货 SKU。`,
-      );
+    insertPo.run(
+      poId,
+      orderSupplierId,
+      today,
+      expectedDate,
+      '待审核',
+      '低库存自动补货',
+      `由系统自动生成，包含 ${items.length} 个补货 SKU。`,
+    );
 
-      supplierItems.forEach((item, index) => {
-        insertItem.run(`${poId}-ITEM-${index + 1}`, poId, item.productId, item.recommendQty, 0, item.unitCost);
-      });
+    items.forEach((item, index) => {
+      insertItem.run(`${poId}-ITEM-${index + 1}`, poId, item.productId, item.recommendQty, 0, item.unitCost);
+    });
 
-      createPayableForPurchaseOrder(poId, {
-        seedByStatus: false,
-        remark: '采购单创建后自动生成应付记录。',
-      });
+    createPayableForPurchaseOrder(poId, {
+      seedByStatus: false,
+      remark: '采购单创建后自动生成应付记录。',
+    });
 
-      appendAuditLog('create_purchase_order', 'purchase_order', poId, {
-        source: 'low_stock_auto_generation',
-        supplierId,
-        skuList: supplierItems.map((item) => item.sku),
-      });
+    appendAuditLog('create_purchase_order', 'purchase_order', poId, {
+      source: 'low_stock_auto_generation',
+      supplierId: orderSupplierId,
+      skuList: items.map((item) => item.sku),
+    });
 
-      created.push({
-        id: poId,
-        supplier: supplierItems[0].supplierName,
-        amount: formatCurrency(totalAmount),
-        itemCount: supplierItems.length,
-        status: '待审核',
-      });
+    created.push({
+      id: poId,
+      supplier: supplierName,
+      amount: formatCurrency(totalAmount),
+      itemCount: items.length,
+      status: '待审核',
     });
 
     return created;

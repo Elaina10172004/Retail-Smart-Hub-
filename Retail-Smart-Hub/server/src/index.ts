@@ -1,4 +1,4 @@
-﻿import type { AddressInfo } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { createApp } from './app';
 import { env } from './config/env';
 

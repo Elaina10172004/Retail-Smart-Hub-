@@ -193,7 +193,7 @@ export function InventoryManagement() {
       return;
     }
 
-    if (!(await confirm(`确认删除 ${sku}（${name}）库存？将忽略库存余量直接删除货架库存。`))) {
+    if (!(await confirm(`确认从库存管理中删除 ${sku}（${name}）？该操作会移除此 SKU 的全部库存台账和货架库存，商品档案仍保留。`))) {
       return;
     }
 
@@ -202,7 +202,7 @@ export function InventoryManagement() {
     setActionMessage('');
     try {
       const response = await deleteInventory(sku, { aggressive: true });
-      setActionMessage(response.message || `${sku} 库存记录已删除。`);
+      setActionMessage(response.message || `${sku} 已从库存管理中删除。`);
       if (selectedInventory?.id === sku) {
         setSelectedInventory(null);
       }
