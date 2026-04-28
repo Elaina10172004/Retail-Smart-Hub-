@@ -125,7 +125,8 @@ class NodeToolBridge:
             "Content-Type": "application/json",
             "x-agent-key": self.config.node_internal_key,
         }
-        timeout = max(5.0, self.config.request_timeout_ms / 1000.0)
+        raw = self.config.request_timeout_ms / 1000.0
+        timeout = max(5.0, raw) if raw > 0 else None
         client = _get_shared_client(timeout)
         response = await client.post(endpoint, headers=headers, json=body)
         if response.is_error:

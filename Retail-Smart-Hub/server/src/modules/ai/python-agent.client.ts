@@ -155,7 +155,7 @@ function isAbortLikeError(error: unknown) {
 async function pythonRequest<T>(pathname: string, options: PythonRequestOptions = {}): Promise<T> {
   const timeoutMs = options.timeoutMs || env.aiAgentRequestTimeoutMs;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
   try {
     let response: Response;
@@ -186,7 +186,7 @@ async function pythonRequest<T>(pathname: string, options: PythonRequestOptions 
 
     return payload as T;
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -265,7 +265,7 @@ export async function streamAiReplyViaPython(
 ): Promise<PythonAgentChatResponse> {
   const timeoutMs = env.aiAgentRequestTimeoutMs;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
   let finalResponse: PythonAgentChatResponse | null = null;
 
   try {
@@ -345,8 +345,9 @@ export async function streamAiReplyViaPython(
     }
     return finalResponse;
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
   }
+
 }
 
 export async function getPythonRagStatus() {
