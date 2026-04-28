@@ -15,12 +15,12 @@ function loadEnvFile() {
   for (const baseDir of candidates) {
     const envPath = path.resolve(baseDir, '.env');
     if (fs.existsSync(envPath)) {
-      dotenv.config({ path: envPath });
+      dotenv.config({ path: envPath, override: true });
       return envPath;
     }
   }
 
-  dotenv.config();
+  dotenv.config({ override: true });
   return '';
 }
 

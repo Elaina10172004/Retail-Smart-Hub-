@@ -115,6 +115,7 @@ def create_app(
                     "model": result.model,
                     "note": result.note,
                     "trace": result.trace,
+                    "conversationMessages": result.conversationMessages,
                 }
                 yield f"event: meta\ndata: {json_dumps(meta)}\n\n"
 

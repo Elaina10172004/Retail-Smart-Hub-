@@ -583,6 +583,7 @@ function initializeDatabase() {
       assistant_reply TEXT NOT NULL,
       assistant_tool_calls_json TEXT NOT NULL DEFAULT '[]',
       assistant_pending_action_json TEXT,
+      conversation_messages_json TEXT NOT NULL DEFAULT '[]',
       parent_interruption_id TEXT,
       resume_option_id TEXT,
       resume_prompt TEXT,
@@ -752,6 +753,7 @@ function ensureAiPendingActionSchema() {
   ensureColumnExists('ai_pending_actions', 'undo_supported', 'undo_supported INTEGER NOT NULL DEFAULT 0');
   ensureColumnExists('ai_pending_actions', 'execution_result', 'execution_result TEXT');
   ensureColumnExists('ai_pending_actions', 'undone_at', 'undone_at TEXT');
+  ensureColumnExists('ai_interruption_checkpoints', 'conversation_messages_json', "conversation_messages_json TEXT NOT NULL DEFAULT '[]'");
 }
 
 function ensureSalesOrderTimeSchema() {

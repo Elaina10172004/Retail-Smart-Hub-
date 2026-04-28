@@ -82,6 +82,7 @@ class ChatRequest(BaseModel):
     token: str = ""
     attachments: List[AttachmentInput] = Field(default_factory=list)
     history: List[HistoryItem] = Field(default_factory=list)
+    conversationMessages: Optional[List[Dict[str, Any]]] = None
 
 
 class AgentPlan(BaseModel):
@@ -162,6 +163,7 @@ class ChatResponse(BaseModel):
     model: str = ""
     note: Optional[str] = None
     trace: List[str] = Field(default_factory=list)
+    conversationMessages: Optional[List[Dict[str, Any]]] = None
 
 
 class RagRebuildRequest(BaseModel):

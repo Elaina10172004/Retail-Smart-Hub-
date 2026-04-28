@@ -819,7 +819,7 @@ def _build_openai_compatible_request(
         # Answer/Plan phases: disable thinking for clean structured output
         body["temperature"] = 0.1
     else:
-        body["reasoning_effort"] = "low"
+        body["reasoning_effort"] = "medium"
     return endpoint, headers, body
 
 

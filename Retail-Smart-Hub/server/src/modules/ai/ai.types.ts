@@ -42,6 +42,7 @@ export interface AiChatRequest {
     pendingActionName?: string;
     pendingActionStatus?: AiPendingAction['status'];
   }>;
+  conversationMessages?: Record<string, unknown>[];
 }
 
 export interface AiInterruptionOption {
@@ -86,6 +87,7 @@ export interface AiChatResponse {
   model: string;
   note?: string;
   trace?: string[];
+  conversationMessages?: Record<string, unknown>[];
 }
 
 export interface AiChatStreamMeta {

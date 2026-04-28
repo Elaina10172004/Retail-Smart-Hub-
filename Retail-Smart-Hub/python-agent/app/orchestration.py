@@ -2460,6 +2460,7 @@ async def build_configured_response(
             f"chunks={len(context.chunks)}, tools={len(tool_state.tool_calls)}"
         ),
         trace=trace,
+        conversationMessages=tool_state.messages if interruption else None,
     )
 
 
@@ -2487,6 +2488,85 @@ async def run_chat(
     if effective_request.resume:
         trace.append(
             f"Interrupt resume received: interruption={compact_text(effective_request.resume.interruptionId)} option={compact_text(effective_request.resume.optionId)}"
+        )
+
+    # Fast path: if conversationMessages exist (from a previous interruption checkpoint),
+    # skip re-gathering context and jump straight to continuing the conversation.
+    restored_messages = effective_request.conversationMessages
+    if restored_messages:
+        trace.append("Resume fast path: using saved conversation messages, skipping context rebuild.")
+        # Append a user message for the resume prompt
+        restored_messages = list(restored_messages)  # shallow copy
+        restored_messages.append({"role": "user", "content": prompt})
+        configured = config.is_model_configured()
+        if not configured:
+            return await build_unconfigured_response(
+                request=effective_request,
+                prompt=prompt,
+                config=config,
+                node_bridge=node_bridge,
+                context=ContextBundle(
+                    profile_payload={}, profile_context="", chunks=[], citations=[],
+                    knowledge_context="", attachment_context="", planner_hints=[],
+                    skill_context="No matched skill context.", matched_skill_names=[],
+                    skill_tool_names=[], tools=[], retrieval_mode="hybrid",
+                ),
+                trace=trace,
+            )
+        tools = await node_bridge.get_tools_schema(effective_request.token)
+        builtin_tools = build_builtin_tool_definitions(config)
+        if builtin_tools:
+            existing_names = {
+                str((item.get("function") or {}).get("name") or "").strip()
+                for item in tools if isinstance(item, dict)
+            }
+            for item in builtin_tools:
+                if str((item.get("function") or {}).get("name") or "").strip() not in existing_names:
+                    tools.append(item)
+        trace.append(f"Resume tools: {len(tools)} visible")
+        instrumented_messages = list(restored_messages)
+        plan = _build_fallback_agent_plan(
+            request=effective_request,
+            available_tools=_tool_names_from_definitions(tools),
+        )
+        tool_state = await run_model_tool_loop(
+            request=effective_request,
+            config=config,
+            node_bridge=node_bridge,
+            messages=instrumented_messages,
+            tools=tools,
+            model_requester=model_requester,
+            trace=trace,
+            trace_prefix="Resume",
+        )
+        tool_state = await synthesize_final_answer(
+            request=effective_request,
+            config=config,
+            tool_state=tool_state,
+            model_requester=model_requester,
+            trace=trace,
+            plan=plan,
+        )
+        answer_meta = {
+            "used_evidence_ids": [],
+            "unresolved_gaps": [],
+            "confidence": "medium" if tool_state.tool_calls else "low",
+            "confidence_score": 0.72 if tool_state.tool_calls else 0.42,
+        }
+        return await build_configured_response(
+            request=effective_request,
+            prompt=prompt,
+            config=config,
+            node_bridge=node_bridge,
+            context=ContextBundle(
+                profile_payload={}, profile_context="", chunks=[], citations=[],
+                knowledge_context="", attachment_context="", planner_hints=[],
+                skill_context="No matched skill context.", matched_skill_names=[],
+                skill_tool_names=[], tools=tools, retrieval_mode="hybrid",
+            ),
+            tool_state=tool_state,
+            trace=trace,
+            answer_meta=answer_meta,
         )
 
     context = await resolve_context_bundle(

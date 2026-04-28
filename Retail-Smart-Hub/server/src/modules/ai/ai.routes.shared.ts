@@ -258,6 +258,7 @@ export function buildAiChatRuntimeRequest(input: {
     token: req.auth?.token || '',
     attachments,
     history,
+    ...((input as any).conversationMessages?.length ? { conversationMessages: (input as any).conversationMessages } : {}),
   };
 }
 
@@ -354,6 +355,7 @@ export function buildAiChatRuntimeRequestWithCheckpoint(input: {
       conversationId: input.conversationId || checkpoint.conversationId,
       attachments: effectiveAttachments,
       history: effectiveHistory,
+      ...(checkpoint.conversationMessages?.length ? { conversationMessages: checkpoint.conversationMessages } : {}),
     }),
   };
 }
@@ -387,6 +389,7 @@ export function persistInterruptionCheckpointResult(input: {
     assistantReply: input.result.reply,
     assistantToolCalls: input.result.toolCalls || [],
     assistantPendingAction: input.result.pendingAction,
+    conversationMessages: input.result.conversationMessages,
     parentInterruptionId: input.resumedCheckpoint?.id,
   });
 }

@@ -21,6 +21,7 @@ interface InterruptionCheckpointRow {
   assistantReply: string;
   assistantToolCallsJson: string;
   assistantPendingActionJson: string | null;
+  conversationMessagesJson: string;
   parentInterruptionId: string | null;
   resumeOptionId: string | null;
   resumePrompt: string | null;
@@ -46,6 +47,7 @@ export interface StoredInterruptionCheckpoint {
   assistantReply: string;
   assistantToolCalls: AiToolCallRecord[];
   assistantPendingAction?: AiChatResponse['pendingAction'];
+  conversationMessages?: Record<string, unknown>[];
   parentInterruptionId?: string;
   resumeOptionId?: string;
   resumePrompt?: string;
@@ -66,6 +68,7 @@ interface SaveInterruptionCheckpointInput {
   assistantReply: string;
   assistantToolCalls: AiToolCallRecord[];
   assistantPendingAction?: AiChatResponse['pendingAction'];
+  conversationMessages?: Record<string, unknown>[];
   parentInterruptionId?: string;
 }
 
@@ -125,6 +128,7 @@ function toCheckpoint(row: InterruptionCheckpointRow | undefined): StoredInterru
     assistantReply: row.assistantReply,
     assistantToolCalls: safeJsonParse(row.assistantToolCallsJson, [] as AiToolCallRecord[]),
     assistantPendingAction: safeJsonParse(row.assistantPendingActionJson, undefined as AiChatResponse['pendingAction'] | undefined),
+    conversationMessages: safeJsonParse(row.conversationMessagesJson, undefined as Record<string, unknown>[] | undefined),
     parentInterruptionId: row.parentInterruptionId || undefined,
     resumeOptionId: row.resumeOptionId || undefined,
     resumePrompt: row.resumePrompt || undefined,
@@ -152,6 +156,7 @@ const getCheckpointById = db.prepare<InterruptionCheckpointRow>(`
     assistant_reply as assistantReply,
     assistant_tool_calls_json as assistantToolCallsJson,
     assistant_pending_action_json as assistantPendingActionJson,
+    conversation_messages_json as conversationMessagesJson,
     parent_interruption_id as parentInterruptionId,
     resume_option_id as resumeOptionId,
     resume_prompt as resumePrompt,
@@ -168,9 +173,10 @@ const upsertCheckpointStatement = db.prepare(`
     id, conversation_id, user_id, tenant_id, kind, status, title, message,
     options_json, request_prompt, request_attachments_json, request_history_json,
     assistant_reply, assistant_tool_calls_json, assistant_pending_action_json,
+    conversation_messages_json,
     parent_interruption_id, resume_option_id, resume_prompt,
     created_at, updated_at, resumed_at, resolved_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL)
   ON CONFLICT(id) DO UPDATE SET
     conversation_id = excluded.conversation_id,
     user_id = excluded.user_id,
@@ -186,6 +192,7 @@ const upsertCheckpointStatement = db.prepare(`
     assistant_reply = excluded.assistant_reply,
     assistant_tool_calls_json = excluded.assistant_tool_calls_json,
     assistant_pending_action_json = excluded.assistant_pending_action_json,
+    conversation_messages_json = excluded.conversation_messages_json,
     parent_interruption_id = excluded.parent_interruption_id,
     updated_at = excluded.updated_at
 `);
@@ -246,6 +253,7 @@ export function saveInterruptionCheckpoint(input: SaveInterruptionCheckpointInpu
     input.assistantReply,
     safeJsonStringify(input.assistantToolCalls, '[]'),
     input.assistantPendingAction ? safeJsonStringify(input.assistantPendingAction, 'null') : null,
+    input.conversationMessages ? safeJsonStringify(input.conversationMessages, '[]') : '[]',
     input.parentInterruptionId || null,
     timestamp,
     timestamp,
