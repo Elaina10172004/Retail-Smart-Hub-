@@ -2498,7 +2498,10 @@ async def run_chat(
     # Fast path: if conversationMessages exist (from a previous interruption checkpoint),
     # skip re-gathering context and jump straight to continuing the conversation.
     restored_messages = effective_request.conversationMessages
-    trace.append(f"conversationMessages received: {bool(restored_messages)} (count={len(restored_messages) if restored_messages else 0})")
+    conv_count = len(restored_messages) if restored_messages else 0
+    trace.append(f"[DIAG] conversationMessages received: {bool(restored_messages)} (count={conv_count})")
+    # Also prepend to reply for absolute visibility
+    _conv_diag = f"[诊断] conversationMessages={conv_count} "
     if restored_messages:
         if on_progress:
             await on_progress("status", "正在继续处理...")
