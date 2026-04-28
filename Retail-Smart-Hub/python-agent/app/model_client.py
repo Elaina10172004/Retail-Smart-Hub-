@@ -815,11 +815,12 @@ def _build_openai_compatible_request(
         body["tool_choice"] = tool_choice or "auto"
     if not config.requires_reasoning_for_tool_calls(role):
         body["temperature"] = 0.3
-    elif tool_choice == "none":
-        # Answer/Plan phases: disable thinking for clean structured output
-        body["temperature"] = 0.1
     else:
-        body["reasoning_effort"] = "medium"
+        # DeepSeek V4 enables thinking by default. Explicitly disable it
+        # to skip chain-of-thought token generation (saves 5-10s per call).
+        # Set AI_DEEPSEEK_THINKING=enabled to opt back in.
+        body["thinking"] = {"type": "disabled"}
+        body["temperature"] = 0.3
     return endpoint, headers, body
 
 
