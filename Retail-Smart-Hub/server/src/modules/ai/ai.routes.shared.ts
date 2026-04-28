@@ -330,10 +330,25 @@ export function buildAiChatRuntimeRequestWithCheckpoint(input: {
     input.prompt.trim() ||
     selectedOption.prompt.trim() ||
     checkpoint.requestPrompt;
+  // Build a summary of previous turn's findings for context continuity
+  const previousFindings: string[] = [];
+  if (checkpoint.assistantReply) {
+    previousFindings.push(`上一轮识别结果：${checkpoint.assistantReply.slice(0, 800)}`);
+  }
+  if (checkpoint.assistantToolCalls?.length) {
+    const toolSummary = checkpoint.assistantToolCalls
+      .map((tc) => `- ${tc.name}: ${tc.summary}`)
+      .join('\n');
+    previousFindings.push(`上一轮已执行的工具：\n${toolSummary}`);
+  }
+  const contextBlock = previousFindings.length > 0
+    ? `\n\n===== 上一轮上下文（已确认的事实，不要重复查询）=====\n${previousFindings.join('\n\n')}\n==============================================\n`
+    : '';
+
   const resumedPrompt = [
     `中断恢复：用户已确认上一轮选项「${selectedOption.label}」。`,
     '这项选择应视为已确认事实，除非与当前证据直接冲突，否则不要重复追问同一个问题。',
-    '请基于已恢复的附件、上一轮识别结果和该选择，继续处理剩余主数据缺口或下一步导入动作。',
+    `${contextBlock}请基于以上已确认的事实和上一轮识别结果，直接执行用户选择的动作，不要再重复查询主数据。`,
     `用户当前输入：${effectivePrompt}`,
   ].join('\n');
   // Use current attachments if provided; otherwise restore from checkpoint but
