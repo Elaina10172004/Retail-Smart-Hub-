@@ -103,6 +103,7 @@ export interface AiChatStreamMeta {
   model: string;
   note?: string;
   trace?: string[];
+  conversationMessages?: Record<string, unknown>[];
 }
 
 export interface AiChatStreamDelta {

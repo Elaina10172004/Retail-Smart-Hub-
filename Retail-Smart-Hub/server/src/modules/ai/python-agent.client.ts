@@ -72,6 +72,7 @@ export interface PythonAgentChatResponse {
   model: string;
   note?: string;
   trace?: string[];
+  conversationMessages?: Record<string, unknown>[];
 }
 
 export interface PythonAgentStreamMeta {
@@ -87,6 +88,7 @@ export interface PythonAgentStreamMeta {
   model: string;
   note?: string;
   trace?: string[];
+  conversationMessages?: Record<string, unknown>[];
 }
 
 export interface PythonAgentStreamCallbacks {

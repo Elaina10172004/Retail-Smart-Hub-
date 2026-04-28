@@ -408,6 +408,7 @@ export function metaToEnvelope(meta: AiChatStreamMeta) {
     interruption: meta.interruption,
     note: meta.note,
     trace: meta.trace,
+    conversationMessages: meta.conversationMessages,
   };
 }
 
