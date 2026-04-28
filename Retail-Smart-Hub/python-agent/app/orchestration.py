@@ -2500,6 +2500,8 @@ async def run_chat(
     restored_messages = effective_request.conversationMessages
     trace.append(f"conversationMessages received: {bool(restored_messages)} (count={len(restored_messages) if restored_messages else 0})")
     if restored_messages:
+        if on_progress:
+            await on_progress("status", "正在继续处理...")
         trace.append("Resume fast path: using saved conversation messages, skipping context rebuild.")
         # Append a user message for the resume prompt
         restored_messages = list(restored_messages)  # shallow copy
@@ -2577,8 +2579,17 @@ async def run_chat(
 
     # Progress: starting context gathering
     if on_progress:
-        has_img = any(compact_text(getattr(a, "kind", "")).lower() == "image" for a in effective_request.attachments)
-        await on_progress("status", "正在识别图片内容..." if has_img else "正在分析请求...")
+        is_resume = bool(effective_request.resume)
+        has_real_image = any(
+            compact_text(getattr(a, "kind", "")).lower() == "image" and getattr(a, "imageDataUrl", None)
+            for a in effective_request.attachments
+        )
+        if is_resume:
+            await on_progress("status", "正在继续处理...")
+        elif has_real_image:
+            await on_progress("status", "正在识别图片内容...")
+        else:
+            await on_progress("status", "正在分析请求...")
 
     context = await resolve_context_bundle(
         request=effective_request,
