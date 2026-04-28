@@ -10,6 +10,8 @@ let sidecarReady = false;
 let pythonDepsChecked = false;
 let pythonStdoutBuffer = '';
 let pythonStderrBuffer = '';
+const PYTHON_DEPENDENCY_CHECK_SCRIPT =
+  "import fastapi,uvicorn,pydantic,lancedb; from fastapi import FastAPI; FastAPI(title='dependency-check')";
 
 function isPythonRuntimeEnabled() {
   return env.aiRuntime === 'python';
@@ -102,7 +104,7 @@ function ensurePythonAgentDependencies(pythonEntry: string) {
     return;
   }
 
-  const checkResult = runPythonSync(['-c', 'import fastapi,uvicorn,pydantic,lancedb'], pythonAgentDir);
+  const checkResult = runPythonSync(['-c', PYTHON_DEPENDENCY_CHECK_SCRIPT], pythonAgentDir);
   if (checkResult.status === 0) {
     pythonDepsChecked = true;
     return;
@@ -117,7 +119,7 @@ function ensurePythonAgentDependencies(pythonEntry: string) {
     throw new Error(`Failed to install python-agent requirements: ${details}`);
   }
 
-  const verifyResult = runPythonSync(['-c', 'import fastapi,uvicorn,pydantic,lancedb'], pythonAgentDir);
+  const verifyResult = runPythonSync(['-c', PYTHON_DEPENDENCY_CHECK_SCRIPT], pythonAgentDir);
   if (verifyResult.status !== 0) {
     const stderr = verifyResult.stderr?.trim();
     const stdout = verifyResult.stdout?.trim();

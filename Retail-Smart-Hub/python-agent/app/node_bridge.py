@@ -162,7 +162,7 @@ class NodeToolBridge:
                     "prompt": request.prompt,
                     "userId": request.userId,
                     "tenantId": request.tenantId,
-                    "sessionId": request.conversationId,
+                    "sessionId": request.conversationId or "",
                     "username": request.username,
                     "permissions": request.permissions,
                     "token": request.token,

@@ -404,6 +404,26 @@ class AgentConfig:
             if (self.openai_api_key or "").strip():
                 defaults = self._resolve_provider_defaults("openai")
                 return {**defaults, "role": "vision"}
+            if (self.small_provider or "").strip().lower() in {"openai", "gemini"} and (self.small_api_key or "").strip():
+                defaults = self._resolve_provider_defaults(self.small_provider)
+                return {
+                    "provider": defaults["provider"],
+                    "base_url": (self.small_base_url or defaults["base_url"]).rstrip("/"),
+                    "model": (self.small_model or defaults["model"]).strip(),
+                    "api_key": self.small_api_key.strip(),
+                    "api_key_env": "AI_SMALL_API_KEY",
+                    "role": "vision",
+                }
+            if (self.large_provider or "").strip().lower() in {"openai", "gemini"} and (self.large_api_key or "").strip():
+                defaults = self._resolve_provider_defaults(self.large_provider)
+                return {
+                    "provider": defaults["provider"],
+                    "base_url": (self.large_base_url or defaults["base_url"]).rstrip("/"),
+                    "model": (self.large_model or defaults["model"]).strip(),
+                    "api_key": self.large_api_key.strip(),
+                    "api_key_env": "AI_LARGE_API_KEY",
+                    "role": "vision",
+                }
             # If no multimodal key is configured, fail explicitly in the
             # vision call instead of silently using a text-only small model.
             defaults = self._resolve_provider_defaults("gemini")

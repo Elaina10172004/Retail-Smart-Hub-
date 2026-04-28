@@ -383,15 +383,34 @@ def _is_ambiguous_delivery_document(payload: Mapping[str, Any]) -> bool:
 
 
 def _prompt_explicitly_sets_import_target(prompt: str) -> bool:
+    return bool(_explicit_import_target_from_prompt(prompt))
+
+
+def _explicit_import_target_from_prompt(prompt: str) -> str:
     normalized = compact_text(prompt).lower()
     procurement_markers = ("采购单", "采购", "进货", "procurement", "purchase")
     sales_markers = ("销售单", "销售订单", "客户订单", "销售", "sales order", "sales")
-    return any(marker in normalized for marker in procurement_markers + sales_markers)
+    wants_procurement = any(marker in normalized for marker in procurement_markers)
+    wants_sales = any(marker in normalized for marker in sales_markers)
+    if wants_procurement and not wants_sales:
+        return "procurement"
+    if wants_sales and not wants_procurement:
+        return "sales"
+    return ""
 
 
 def _apply_image_target_guardrails(fields: Mapping[str, Any], request: ChatRequest) -> Dict[str, Any]:
     guarded = dict(fields)
-    if _is_ambiguous_delivery_document(guarded) and not _prompt_explicitly_sets_import_target(request.prompt):
+    explicit_target = _explicit_import_target_from_prompt(request.prompt)
+    if explicit_target and compact_text(guarded.get("import_target", "")).lower() in {"", "none"}:
+        guarded["import_target"] = explicit_target
+        missing_fields = [
+            item
+            for item in list(guarded.get("missing_fields") or [])
+            if compact_text(item) != "需确认按采购单还是销售单导入"
+        ]
+        guarded["missing_fields"] = missing_fields
+    if _is_ambiguous_delivery_document(guarded) and not explicit_target:
         guarded["import_target"] = "none"
         missing_fields = list(guarded.get("missing_fields") or [])
         if "需确认按采购单还是销售单导入" not in missing_fields:

@@ -2060,9 +2060,14 @@ export function executeRuntimeToolCall(
     };
   }
 
+  const parser =
+    toolName === 'get_master_data_overview'
+      ? z.object({ entity: z.string().trim().optional() }).strict()
+      : schema.parser;
+
   let parsedArgs: Record<string, unknown>;
   try {
-    parsedArgs = parseToolArguments(schema.parser, rawArguments);
+    parsedArgs = parseToolArguments(parser, rawArguments);
   } catch (error) {
     const summary = `Tool argument validation failed: ${error instanceof Error ? error.message : 'invalid args'}`;
     const toolCall: AiToolCallRecord = {

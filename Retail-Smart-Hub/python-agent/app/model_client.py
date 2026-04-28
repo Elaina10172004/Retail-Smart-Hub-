@@ -818,9 +818,11 @@ def _build_openai_compatible_request(
     else:
         # DeepSeek V4 enables thinking by default. Explicitly disable it
         # to skip chain-of-thought token generation (saves 5-10s per call).
-        # Set AI_DEEPSEEK_THINKING=enabled to opt back in.
         body["thinking"] = {"type": "disabled"}
-        body["temperature"] = 0.3
+        body["temperature"] = 0.1 if tool_choice == "none" else 0.3
+    # Force JSON output in Answer phase for structured interruption options
+    if tool_choice == "none" and role != "vision":
+        body["response_format"] = {"type": "json_object"}
     return endpoint, headers, body
 
 
