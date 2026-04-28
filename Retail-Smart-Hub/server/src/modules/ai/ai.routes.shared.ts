@@ -347,6 +347,13 @@ export function buildAiChatRuntimeRequestWithCheckpoint(input: {
   });
   const effectiveHistory = buildHistoryFromCheckpoint(checkpoint);
 
+  const hasConversationMessages = !!(checkpoint.conversationMessages?.length);
+  if (!hasConversationMessages) {
+    console.warn('[resume] checkpoint has no conversationMessages — fallback to fresh context rebuild');
+  } else {
+    console.log(`[resume] restoring ${checkpoint.conversationMessages!.length} conversation messages from checkpoint`);
+  }
+
   return {
     resumedCheckpoint: checkpoint,
     runtimeRequest: buildAiChatRuntimeRequest({
@@ -355,7 +362,7 @@ export function buildAiChatRuntimeRequestWithCheckpoint(input: {
       conversationId: input.conversationId || checkpoint.conversationId,
       attachments: effectiveAttachments,
       history: effectiveHistory,
-      ...(checkpoint.conversationMessages?.length ? { conversationMessages: checkpoint.conversationMessages } : {}),
+      ...(hasConversationMessages ? { conversationMessages: checkpoint.conversationMessages } : {}),
     }),
   };
 }
@@ -377,6 +384,9 @@ export function persistInterruptionCheckpointResult(input: {
   if (!input.result.interruption) {
     return;
   }
+
+  const hasConvMsgs = !!(input.result.conversationMessages?.length);
+  console.log(`[checkpoint-save] conversationMessages present: ${hasConvMsgs} (count=${input.result.conversationMessages?.length || 0})`);
 
   saveInterruptionCheckpoint({
     interruption: input.result.interruption,

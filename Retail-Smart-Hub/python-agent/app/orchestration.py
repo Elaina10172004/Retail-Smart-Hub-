@@ -2493,6 +2493,7 @@ async def run_chat(
     # Fast path: if conversationMessages exist (from a previous interruption checkpoint),
     # skip re-gathering context and jump straight to continuing the conversation.
     restored_messages = effective_request.conversationMessages
+    trace.append(f"conversationMessages received: {bool(restored_messages)} (count={len(restored_messages) if restored_messages else 0})")
     if restored_messages:
         trace.append("Resume fast path: using saved conversation messages, skipping context rebuild.")
         # Append a user message for the resume prompt
