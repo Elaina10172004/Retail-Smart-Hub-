@@ -1,5 +1,5 @@
 import { apiClient } from '@/services/api/client';
-import type { ApiEnvelope } from '@/types/api';
+import type { ApiEnvelope, PaginatedData } from '@/types/api';
 import type {
   CreateProcurementOrderPayload,
   DeleteProcurementOrderResponse,
@@ -13,8 +13,13 @@ import type {
   UpdateProcurementStatusPayload,
 } from '@/types/procurement';
 
-export function fetchProcurementOrders() {
-  return apiClient.get<ApiEnvelope<ProcurementOrder[]>>('/procurement');
+export function fetchProcurementOrders(params?: { page?: number; pageSize?: number; search?: string }) {
+  const qs = new URLSearchParams();
+  if (params?.page) qs.set('page', String(params.page));
+  if (params?.pageSize) qs.set('pageSize', String(params.pageSize));
+  if (params?.search) qs.set('search', params.search);
+  const query = qs.toString();
+  return apiClient.get<ApiEnvelope<PaginatedData<ProcurementOrder>>>(`/procurement${query ? `?${query}` : ''}`);
 }
 
 export function fetchProcurementOrderDetail(id: string) {

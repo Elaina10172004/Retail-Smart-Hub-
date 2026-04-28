@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requirePermission } from '../../shared/auth';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { fail, ok } from '../../shared/response';
+import { paginateList } from '../../shared/paginate';
 import { getProcurementArrivalWorkspace, registerProcurementArrival } from '../arrival/arrival.service';
 import {
   createProcurementOrder,
@@ -35,8 +36,8 @@ procurementRouter.get('/form-options', requirePermission('procurement.manage'), 
   return ok(res, getProcurementFormOptions());
 });
 
-procurementRouter.get('/', requirePermission('procurement.manage'), (_req, res) => {
-  return ok(res, listProcurementOrders());
+procurementRouter.get('/', requirePermission('procurement.manage'), (req, res) => {
+  return ok(res, paginateList(req, () => listProcurementOrders(), { searchFields: ['id', 'supplier', 'status'] }));
 });
 
 procurementRouter.post('/', requirePermission('procurement.manage'), (req, res) => {

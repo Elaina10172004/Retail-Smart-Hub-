@@ -5,6 +5,14 @@ export interface ApiEnvelope<T> {
   timestamp: string;
 }
 
+export interface PaginatedData<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
 export interface HealthStatus {
   service: string;
   status: 'ok';

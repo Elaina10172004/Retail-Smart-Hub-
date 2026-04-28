@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
+import { paginateList } from '../../shared/paginate';
 import {
   createCustomer,
   deleteCustomer,
@@ -33,8 +34,8 @@ customersRouter.get('/overview', requirePermission('settings.master-data'), (_re
   return ok(res, getCustomerSummary());
 });
 
-customersRouter.get('/', requirePermission('settings.master-data'), (_req, res) => {
-  return ok(res, listCustomers());
+customersRouter.get('/', requirePermission('settings.master-data'), (req, res) => {
+  return ok(res, paginateList(req, () => listCustomers(), { searchFields: ['id', 'name', 'channelPreference', 'contactName', 'phone'] }));
 });
 
 customersRouter.get('/:id', requirePermission('settings.master-data'), (req, res) => {

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
+import { paginateList } from '../../shared/paginate';
 import {
   advanceArrival,
   createManualArrivalRecords,
@@ -23,8 +24,8 @@ arrivalRouter.get('/summary', requirePermission('procurement.manage'), (_req, re
   });
 });
 
-arrivalRouter.get('/', requirePermission('procurement.manage'), (_req, res) => {
-  return ok(res, listArrivals());
+arrivalRouter.get('/', requirePermission('procurement.manage'), (req, res) => {
+  return ok(res, paginateList(req, () => listArrivals(), { searchFields: ['id', 'poId', 'supplier'] }));
 });
 
 arrivalRouter.get('/create-options', requirePermission('procurement.manage'), (_req, res) => {

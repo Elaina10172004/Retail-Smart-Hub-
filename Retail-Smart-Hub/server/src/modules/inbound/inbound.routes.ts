@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
+import { paginateList } from '../../shared/paginate';
 import {
   confirmInbound,
   createManualInboundOrders,
@@ -27,8 +28,8 @@ inboundRouter.get('/summary', requirePermission('procurement.manage'), (_req, re
   });
 });
 
-inboundRouter.get('/', requirePermission('procurement.manage'), (_req, res) => {
-  return ok(res, listInbounds());
+inboundRouter.get('/', requirePermission('procurement.manage'), (req, res) => {
+  return ok(res, paginateList(req, () => listInbounds(), { searchFields: ['id', 'rcvId', 'supplier', 'warehouse'] }));
 });
 
 inboundRouter.get('/create-options', requirePermission('procurement.manage'), (_req, res) => {

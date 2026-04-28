@@ -4,6 +4,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Pagination } from '@/components/ui/pagination';
+import { useDebounce } from '@/hooks/useDebounce';
+import type { PaginatedData } from '@/types/api';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
@@ -131,10 +134,12 @@ export function ProcurementManagement() {
   const { confirm, confirmDialog } = useConfirmDialog();
   const isSuperAdmin = Boolean(user && (user.username === 'admin' || user.roles.includes('系统管理员')));
   const canManageProcurement = hasPermission('procurement.manage');
-  const [orders, setOrders] = useState<ProcurementOrder[]>([]);
+  const [ordersData, setOrdersData] = useState<PaginatedData<ProcurementOrder> | null>(null);
   const [suggestion, setSuggestion] = useState<ProcurementSuggestionSummary | null>(null);
   const [formOptions, setFormOptions] = useState<ProcurementFormOptions>({ suppliers: [], products: [] });
   const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const debouncedSearch = useDebounce(searchTerm, 300);
   const [statusFilter, setStatusFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -159,15 +164,12 @@ export function ProcurementManagement() {
   } | null>(null);
 
   const filteredOrders = useMemo(() => {
-    return orders.filter((item) => {
-      const matchesSearch =
-        !searchTerm ||
-        item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.supplier.toLowerCase().includes(searchTerm.toLowerCase());
+    const items = ordersData?.items ?? [];
+    return items.filter((item) => {
       const matchesStatus = !statusFilter || item.status === statusFilter;
-      return matchesSearch && matchesStatus;
+      return matchesStatus;
     });
-  }, [orders, searchTerm, statusFilter]);
+  }, [ordersData, statusFilter]);
 
   const selectedSupplier = useMemo(
     () => formOptions.suppliers.find((item) => item.id === supplierId) || null,
@@ -231,11 +233,11 @@ export function ProcurementManagement() {
 
     try {
       const [ordersResponse, suggestionResponse, formOptionsResponse] = await Promise.all([
-        fetchProcurementOrders(),
+        fetchProcurementOrders({ page: currentPage, pageSize: 20, search: debouncedSearch }),
         fetchProcurementSuggestions(),
         fetchProcurementFormOptions(),
       ]);
-      setOrders(ordersResponse.data);
+      setOrdersData(ordersResponse.data);
       setSuggestion(suggestionResponse.data);
       setFormOptions(formOptionsResponse.data);
 
@@ -253,7 +255,12 @@ export function ProcurementManagement() {
 
   useEffect(() => {
     void loadProcurement();
-  }, []);
+  }, [currentPage, debouncedSearch]);
+
+  // Reset to page 1 when search changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch]);
 
   const openPreview = (documents: DocumentPreviewRecord[], activeId?: string) => {
     if (documents.length === 0) {
@@ -1047,7 +1054,17 @@ export function ProcurementManagement() {
             </TableBody>
           </Table>
           <div className="flex items-center justify-between rounded-b-xl border-t border-gray-100 bg-gray-50/30 px-6 py-4">
-            <div className="text-sm text-gray-500">当前显示 {filteredOrders.length} 条采购单记录</div>
+            {ordersData ? (
+              <Pagination
+                page={ordersData.page}
+                totalPages={ordersData.totalPages}
+                total={ordersData.total}
+                pageSize={ordersData.pageSize}
+                onPageChange={setCurrentPage}
+              />
+            ) : (
+              <div className="text-sm text-gray-500">加载中...</div>
+            )}
             {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin text-gray-400" /> : null}
           </div>
         </CardContent>

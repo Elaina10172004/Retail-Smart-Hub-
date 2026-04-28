@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
+import { paginateList } from '../../shared/paginate';
 import {
   createShipmentDocument,
   getShipmentDocumentDetail,
@@ -23,8 +24,8 @@ shippingRouter.get('/summary', requirePermission('shipping.dispatch'), (_req, re
   });
 });
 
-shippingRouter.get('/', requirePermission('shipping.dispatch'), (_req, res) => {
-  return ok(res, listShipmentDocuments());
+shippingRouter.get('/', requirePermission('shipping.dispatch'), (req, res) => {
+  return ok(res, paginateList(req, () => listShipmentDocuments(), { searchFields: ['id', 'customer', 'courier', 'trackingNo'] }));
 });
 
 shippingRouter.get('/workbench', requirePermission('shipping.dispatch'), (_req, res) => {

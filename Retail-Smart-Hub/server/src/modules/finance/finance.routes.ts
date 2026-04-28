@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { requirePermission } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
+import { paginateList } from '../../shared/paginate';
 import {
   getFinanceOverview,
   getPayableDetail,
@@ -33,8 +34,8 @@ financeRouter.get('/overview', requireFinanceRead, (_req, res) => {
   return ok(res, getFinanceOverview());
 });
 
-financeRouter.get('/receivables', requireFinanceRead, (_req, res) => {
-  return ok(res, listReceivables());
+financeRouter.get('/receivables', requireFinanceRead, (req, res) => {
+  return ok(res, paginateList(req, () => listReceivables(), { searchFields: ['id', 'orderId', 'customer'] }));
 });
 
 financeRouter.get('/receivables/:id', requireFinanceRead, (_req, res) => {
@@ -51,8 +52,8 @@ financeRouter.get('/receipts', requireFinanceRead, (_req, res) => {
   return ok(res, listReceiptRecords(receivableId));
 });
 
-financeRouter.get('/payables', requireFinanceRead, (_req, res) => {
-  return ok(res, listPayables());
+financeRouter.get('/payables', requireFinanceRead, (req, res) => {
+  return ok(res, paginateList(req, () => listPayables(), { searchFields: ['id', 'purchaseOrderId', 'supplier'] }));
 });
 
 financeRouter.get('/payables/:id', requireFinanceRead, (_req, res) => {

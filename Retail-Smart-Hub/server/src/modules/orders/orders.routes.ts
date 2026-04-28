@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requirePermission } from '../../shared/auth';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { fail, ok } from '../../shared/response';
+import { paginateList } from '../../shared/paginate';
 import {
   createOrder,
   deleteOrder,
@@ -33,8 +34,8 @@ ordersRouter.get('/summary', requirePermission('orders.view'), (_req, res) => {
   });
 });
 
-ordersRouter.get('/', requirePermission('orders.view'), (_req, res) => {
-  return ok(res, listOrders());
+ordersRouter.get('/', requirePermission('orders.view'), (req, res) => {
+  return ok(res, paginateList(req, () => listOrders(), { searchFields: ['id', 'customer', 'date'] }));
 });
 
 ordersRouter.get('/form-options', requirePermission('orders.create'), (_req, res) => {

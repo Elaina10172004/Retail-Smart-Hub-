@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requirePermission } from '../../shared/auth';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { fail, ok } from '../../shared/response';
+import { paginateList } from '../../shared/paginate';
 import {
   adjustInventory,
   forceDeleteInventory,
@@ -38,8 +39,8 @@ inventoryRouter.get('/shelves', requirePermission('inventory.view'), (_req, res)
   return ok(res, listInventoryShelves());
 });
 
-inventoryRouter.get('/', requirePermission('inventory.view'), (_req, res) => {
-  return ok(res, listInventory());
+inventoryRouter.get('/', requirePermission('inventory.view'), (req, res) => {
+  return ok(res, paginateList(req, () => listInventory(), { searchFields: ['sku', 'name', 'category', 'supplierName'] }));
 });
 
 inventoryRouter.get('/:sku', requirePermission('inventory.view'), (req, res) => {
