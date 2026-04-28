@@ -401,22 +401,30 @@ export function persistInterruptionCheckpointResult(input: {
   }
 
   const hasConvMsgs = !!(input.result.conversationMessages?.length);
-  console.log(`[checkpoint-save] conversationMessages present: ${hasConvMsgs} (count=${input.result.conversationMessages?.length || 0})`);
+  const convCount = input.result.conversationMessages?.length || 0;
+  console.log(`[checkpoint-save] conversationMessages present: ${hasConvMsgs} (count=${convCount})`);
 
-  saveInterruptionCheckpoint({
-    interruption: input.result.interruption,
-    conversationId: input.runtimeRequest.conversationId || 'default',
-    userId: input.runtimeRequest.userId,
-    tenantId: input.runtimeRequest.tenantId,
-    requestPrompt: input.runtimeRequest.prompt,
-    requestAttachments: input.runtimeRequest.attachments || [],
-    requestHistory: input.runtimeRequest.history || [],
-    assistantReply: input.result.reply,
-    assistantToolCalls: input.result.toolCalls || [],
-    assistantPendingAction: input.result.pendingAction,
-    conversationMessages: input.result.conversationMessages,
-    parentInterruptionId: input.resumedCheckpoint?.id,
-  });
+  try {
+    saveInterruptionCheckpoint({
+      interruption: input.result.interruption,
+      conversationId: input.runtimeRequest.conversationId || 'default',
+      userId: input.runtimeRequest.userId,
+      tenantId: input.runtimeRequest.tenantId,
+      requestPrompt: input.runtimeRequest.prompt,
+      requestAttachments: input.runtimeRequest.attachments || [],
+      requestHistory: input.runtimeRequest.history || [],
+      assistantReply: input.result.reply,
+      assistantToolCalls: input.result.toolCalls || [],
+      assistantPendingAction: input.result.pendingAction,
+      conversationMessages: input.result.conversationMessages,
+      parentInterruptionId: input.resumedCheckpoint?.id,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[checkpoint-save] FAILED: ${msg}`);
+    // Inject the error into the interruption message so the user can see it
+    input.result.interruption.message += `\n\n[诊断] 检查点保存失败：${msg}`;
+  }
 }
 
 export function metaToEnvelope(meta: AiChatStreamMeta) {
