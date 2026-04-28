@@ -134,13 +134,37 @@ def build_model_messages(
         for item in history_messages_override:
             role = "assistant" if str(item.get("role", "")).strip().lower() == "assistant" else "user"
             content = str(item.get("content", "")).strip()
+            if role == "assistant":
+                tc_list = item.get("toolCalls") or []
+                if isinstance(tc_list, list) and tc_list:
+                    tc_lines = ["Previously executed tools:"]
+                    for tc in tc_list:
+                        if isinstance(tc, dict):
+                            name = str(tc.get("name", "")).strip()
+                            status = str(tc.get("status", "")).strip()
+                            summary = str(tc.get("summary", "")).strip()
+                            if name:
+                                tc_lines.append(f"- {name} [{status}]: {summary}" if summary else f"- {name} [{status}]")
+                    content = content + "\n\n" + "\n".join(tc_lines) if content else "\n".join(tc_lines)
             if not content:
                 continue
             history_messages.append({"role": role, "content": content})
     else:
-        for item in request.history[-6:]:
+        for item in request.history[-8:]:
             role = "assistant" if item.role == "assistant" else "user"
             content = str(item.content or "").strip()
+            if role == "assistant":
+                # Include tool call summaries so the model knows what was already done
+                tc_list = getattr(item, "toolCalls", None) or []
+                if tc_list:
+                    tc_lines = ["Previously executed tools:"]
+                    for tc in tc_list:
+                        name = str(getattr(tc, "name", "") or tc.get("name", "") if isinstance(tc, dict) else "").strip()
+                        status = str(getattr(tc, "status", "") or tc.get("status", "") if isinstance(tc, dict) else "").strip()
+                        summary = str(getattr(tc, "summary", "") or tc.get("summary", "") if isinstance(tc, dict) else "").strip()
+                        if name:
+                            tc_lines.append(f"- {name} [{status}]: {summary}" if summary else f"- {name} [{status}]")
+                    content = content + "\n\n" + "\n".join(tc_lines) if content else "\n".join(tc_lines)
             if not content:
                 continue
             history_messages.append({"role": role, "content": content})
