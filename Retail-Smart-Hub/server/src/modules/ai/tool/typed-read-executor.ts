@@ -522,5 +522,22 @@ export function executeTypedReadOnlyTool(request: TypedReadOnlyToolRequest): Typ
       usedFallback: false,
     };
   }
+
+  // RAG-fallback tools: return a helpful summary when RAG docs are unavailable
+  const fallbackSummaries: Record<string, string> = {
+    get_api_catalog: '系统 API 清单：采购(/api/procurement)、销售(/api/orders)、入库(/api/inbound)、发货(/api/shipping)、财务(/api/finance)、库存(/api/inventory)、客户(/api/customers)、报表(/api/reports)、系统设置(/api/settings)',
+    get_database_table_detail: '数据库核心表：suppliers、customers、products、procurement_orders、sales_orders、arrivals、inbounds、shipments、receivables、payables。知识库文档尚未配置，以上为基础信息摘要。',
+    get_role_template_guide: '系统角色：admin(全部权限)、manager(业务管理)、operator(日常操作)、viewer(只读)。权限通过 permissions 字段控制（如 procurement:write、inventory:read）。',
+    get_security_level_guide: '安全分级：公开、内部、机密、绝密。详细角色模板和安全分级请参考知识库文档。',
+    get_report_definitions: '可用报表：销售报表、采购报表、库存报表、财务报表、客户分析。数据来源于对应业务模块的实时汇总。',
+    get_audit_definition: '审计日志记录所有关键操作（创建、修改、删除、确认），包含操作人、时间、IP、操作详情。可通过 list_audit_logs 查询。',
+  };
+  if (fallbackSummaries[toolName]) {
+    return {
+      toolCall: { name: toolName, status: 'completed', summary: fallbackSummaries[toolName].slice(0, 120) },
+      toolContext: fallbackSummaries[toolName],
+      usedFallback: true,
+    };
+  }
 }
 

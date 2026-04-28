@@ -1731,7 +1731,7 @@ function executeTypedWriteTool(
         break;
       case 'create_product_master_data': {
         const supplierName = String(args.preferredSupplierName || '').trim();
-        const supplierRef = resolveActiveSupplierReference(supplierName);
+        const supplierRef = supplierName ? resolveActiveSupplierReference(supplierName) : undefined;
         payload = {
           sku: String(args.sku || '').trim().toUpperCase(),
           name: String(args.name || '').trim(),
@@ -1740,11 +1740,11 @@ function executeTypedWriteTool(
           safeStock: typeof args.safeStock === 'number' ? Math.max(0, Math.trunc(args.safeStock)) : 0,
           salePrice: Number(args.salePrice || 0),
           costPrice: Number(args.costPrice || 0),
-          preferredSupplierId: supplierRef.id,
-          preferredSupplierName: supplierRef.name,
+          preferredSupplierId: supplierRef?.id || '',
+          preferredSupplierName: supplierRef?.name || supplierName,
         };
         summary = `待确认：创建商品档案 ${payload.sku || '-'} / ${payload.name || '-'}.`;
-        confirmationMessage = `将创建商品「${payload.name || '-'}（${payload.sku || '-'}）」并绑定供应商「${payload.preferredSupplierName || '-'}」，确认后写入，是否继续？`;
+        confirmationMessage = `将创建商品「${payload.name || '-'}（${payload.sku || '-'}）」${payload.preferredSupplierName ? `并绑定供应商「${payload.preferredSupplierName}」` : ''}，确认后写入，是否继续？`;
         break;
       }
       case 'generate_shortage_procurement':
