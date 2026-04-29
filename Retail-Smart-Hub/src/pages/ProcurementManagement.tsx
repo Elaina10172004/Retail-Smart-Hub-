@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -140,6 +140,7 @@ export function ProcurementManagement() {
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const debouncedSearch = useDebounce(searchTerm, 300);
+  const lastSearchRef = useRef(debouncedSearch);
   const [statusFilter, setStatusFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -227,13 +228,14 @@ export function ProcurementManagement() {
     [draftItems],
   );
 
-  const loadProcurement = async () => {
+  const loadProcurement = async (pageOverride?: number) => {
+    const page = pageOverride ?? currentPage;
     setIsLoading(true);
     setPageError('');
 
     try {
       const [ordersResponse, suggestionResponse, formOptionsResponse] = await Promise.all([
-        fetchProcurementOrders({ page: currentPage, pageSize: 20, search: debouncedSearch }),
+        fetchProcurementOrders({ page, pageSize: 20, search: debouncedSearch }),
         fetchProcurementSuggestions(),
         fetchProcurementFormOptions(),
       ]);
@@ -254,13 +256,15 @@ export function ProcurementManagement() {
   };
 
   useEffect(() => {
-    void loadProcurement();
-  }, [currentPage, debouncedSearch]);
-
-  // Reset to page 1 when search changes
-  useEffect(() => {
     setCurrentPage(1);
+    // loadProcurement reads stale currentPage, so pass page 1 explicitly when search triggers
   }, [debouncedSearch]);
+
+  useEffect(() => {
+    const page = debouncedSearch !== (lastSearchRef.current ?? '') ? 1 : currentPage;
+    lastSearchRef.current = debouncedSearch;
+    void loadProcurement(page);
+  }, [currentPage, debouncedSearch]);
 
   const openPreview = (documents: DocumentPreviewRecord[], activeId?: string) => {
     if (documents.length === 0) {
