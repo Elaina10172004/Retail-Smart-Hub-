@@ -1,11 +1,10 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Pagination } from '@/components/ui/pagination';
-import { useDebounce } from '@/hooks/useDebounce';
 import type { PaginatedData } from '@/types/api';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
@@ -139,8 +138,6 @@ export function ProcurementManagement() {
   const [formOptions, setFormOptions] = useState<ProcurementFormOptions>({ suppliers: [], products: [] });
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const debouncedSearch = useDebounce(searchTerm, 300);
-  const lastSearchRef = useRef(debouncedSearch);
   const [statusFilter, setStatusFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -235,7 +232,7 @@ export function ProcurementManagement() {
 
     try {
       const [ordersResponse, suggestionResponse, formOptionsResponse] = await Promise.all([
-        fetchProcurementOrders({ page, pageSize: 20, search: debouncedSearch }),
+        fetchProcurementOrders({ page, pageSize: 20, search: searchTerm }),
         fetchProcurementSuggestions(),
         fetchProcurementFormOptions(),
       ]);
@@ -256,15 +253,16 @@ export function ProcurementManagement() {
   };
 
   useEffect(() => {
-    setCurrentPage(1);
-    // loadProcurement reads stale currentPage, so pass page 1 explicitly when search triggers
-  }, [debouncedSearch]);
+    if (currentPage === 1) {
+      void loadProcurement(1);
+    } else {
+      setCurrentPage(1); // will trigger the other effect
+    }
+  }, [searchTerm]);
 
   useEffect(() => {
-    const page = debouncedSearch !== (lastSearchRef.current ?? '') ? 1 : currentPage;
-    lastSearchRef.current = debouncedSearch;
-    void loadProcurement(page);
-  }, [currentPage, debouncedSearch]);
+    void loadProcurement(currentPage);
+  }, [currentPage]);
 
   const openPreview = (documents: DocumentPreviewRecord[], activeId?: string) => {
     if (documents.length === 0) {
