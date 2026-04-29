@@ -97,6 +97,7 @@ export interface OrderRecord {
   status: OrderStatus;
   stockStatus: StockStatus;
   itemCount: number;
+  productSummary?: string;
   expectedDeliveryDate?: string;
   remark?: string;
 }
@@ -150,6 +151,7 @@ interface OrderRow {
   stockStatus: StockStatus;
   totalAmount: number;
   itemCount: number;
+  productSummary?: string | null;
   remark: string | null;
   sourceOrderNo?: string | null;
   sourceSystem?: string | null;
@@ -281,6 +283,7 @@ function toOrderRecord(row: OrderRow): OrderRecord {
     status: row.status,
     stockStatus: row.stockStatus,
     itemCount: row.itemCount,
+    productSummary: row.productSummary || undefined,
     expectedDeliveryDate: row.expectedDeliveryDate,
     remark: row.remark ?? undefined,
   };
@@ -507,19 +510,24 @@ export function resolveCreateOrderRequestPayload(payload: CreateOrderRequestPayl
 export function listOrders() {
   const rows = db.prepare<OrderRow>(`
     SELECT
-      id,
-      customer_name as customerName,
-      order_channel as orderChannel,
-      order_date as orderDate,
-      COALESCE(created_at, CASE WHEN instr(order_date, 'T') > 0 THEN order_date ELSE order_date || 'T09:00:00.000Z' END) as createdAt,
-      expected_delivery_date as expectedDeliveryDate,
-      status,
-      stock_status as stockStatus,
-      total_amount as totalAmount,
-      item_count as itemCount,
-      remark
-    FROM sales_orders
-    ORDER BY order_date DESC, id DESC
+      so.id,
+      so.customer_name as customerName,
+      so.order_channel as orderChannel,
+      so.order_date as orderDate,
+      COALESCE(so.created_at, CASE WHEN instr(so.order_date, 'T') > 0 THEN so.order_date ELSE so.order_date || 'T09:00:00.000Z' END) as createdAt,
+      so.expected_delivery_date as expectedDeliveryDate,
+      so.status,
+      so.stock_status as stockStatus,
+      so.total_amount as totalAmount,
+      so.item_count as itemCount,
+      so.remark,
+      COALESCE((
+        SELECT group_concat(soi.product_name || ' ' || soi.sku, ' ')
+        FROM sales_order_items soi
+        WHERE soi.sales_order_id = so.id
+      ), '') as productSummary
+    FROM sales_orders so
+    ORDER BY so.order_date DESC, so.id DESC
   `).all();
 
   return rows.map(toOrderRecord);

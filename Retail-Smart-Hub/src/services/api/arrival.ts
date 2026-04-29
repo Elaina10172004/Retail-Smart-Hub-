@@ -1,5 +1,6 @@
 import { apiClient } from '@/services/api/client';
 import type { ApiEnvelope } from '@/types/api';
+import { type MaybePaginated, unwrapPaginatedEnvelope } from '@/services/api/pagination';
 import type {
   ArrivalDetailRecord,
   ArrivalRecord,
@@ -8,8 +9,9 @@ import type {
   ManualArrivalCandidateItem,
 } from '@/types/arrival';
 
-export function fetchArrivals() {
-  return apiClient.get<ApiEnvelope<ArrivalRecord[]>>('/arrival');
+export async function fetchArrivals() {
+  const response = await apiClient.get<ApiEnvelope<MaybePaginated<ArrivalRecord>>>('/arrival?pageSize=100');
+  return unwrapPaginatedEnvelope(response);
 }
 
 export function fetchManualArrivalCreateOptions() {

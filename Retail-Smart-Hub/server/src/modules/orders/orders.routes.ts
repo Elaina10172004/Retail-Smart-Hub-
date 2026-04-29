@@ -35,7 +35,7 @@ ordersRouter.get('/summary', requirePermission('orders.view'), (_req, res) => {
 });
 
 ordersRouter.get('/', requirePermission('orders.view'), (req, res) => {
-  return ok(res, paginateList(req, () => listOrders(), { searchFields: ['id', 'customer', 'date'] }));
+  return ok(res, paginateList(req, () => listOrders(), { searchFields: ['id', 'customer', 'date', 'productSummary'] }));
 });
 
 ordersRouter.get('/form-options', requirePermission('orders.create'), (_req, res) => {

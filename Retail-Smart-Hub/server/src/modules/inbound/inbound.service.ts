@@ -387,6 +387,55 @@ function reserveInboundShelf(
   return allocations[0]?.shelfId ?? null;
 }
 
+function loadSourcePurchaseOrderIdsForReceivingNote(receivingNoteId: string) {
+  return db
+    .prepare<{ purchaseOrderId: string }>(`
+      SELECT DISTINCT poi.purchase_order_id as purchaseOrderId
+      FROM receiving_note_items rni
+      JOIN purchase_order_items poi ON poi.id = rni.purchase_order_item_id
+      WHERE rni.receiving_note_id = ?
+      ORDER BY poi.purchase_order_id ASC
+    `)
+    .all(receivingNoteId)
+    .map((item) => item.purchaseOrderId);
+}
+
+function refreshSourceInboundAfterFlow(inboundId: string) {
+  const inbound = loadInbound(inboundId);
+  if (!inbound) {
+    return;
+  }
+
+  const totals =
+    db.prepare<{ qualifiedQty: number; inboundQty: number }>(`
+      SELECT
+        COALESCE(SUM(qualified_qty), 0) as qualifiedQty,
+        COALESCE(SUM(inbound_qty), 0) as inboundQty
+      FROM receiving_note_items
+      WHERE receiving_note_id = ?
+    `).get(inbound.receivingNoteId) ?? { qualifiedQty: 0, inboundQty: 0 };
+
+  const nextStatus =
+    totals.qualifiedQty > 0 && totals.inboundQty >= totals.qualifiedQty
+      ? STATUS_INBOUND_DONE
+      : STATUS_PENDING_INBOUND;
+  const today = currentDateString();
+
+  db.prepare('UPDATE inbound_orders SET inbound_qty = ?, status = ?, completed_at = ? WHERE id = ?').run(
+    totals.inboundQty,
+    nextStatus,
+    nextStatus === STATUS_INBOUND_DONE ? today : null,
+    inboundId,
+  );
+  db.prepare('UPDATE receiving_notes SET status = ? WHERE id = ?').run(
+    nextStatus === STATUS_INBOUND_DONE ? STATUS_RECEIVING_DONE : STATUS_RECEIVING_PENDING_INBOUND,
+    inbound.receivingNoteId,
+  );
+  loadSourcePurchaseOrderIdsForReceivingNote(inbound.receivingNoteId).forEach((purchaseOrderId) => {
+    recalculatePurchaseOrderStatus(purchaseOrderId);
+  });
+}
+
 function normalizeInboundDraftItems(inbound: InboundRow, payloadItems: SaveInboundDraftItemPayload[]) {
   const currentItems = loadInboundItemStocks(inbound.receivingNoteId);
   const itemMap = new Map(currentItems.map((item) => [item.id, item]));
@@ -659,7 +708,9 @@ export function confirmInbound(inboundId: string, payloadItems?: SaveInboundDraf
 
     db.prepare('UPDATE inbound_orders SET status = ?, completed_at = ? WHERE id = ?').run(STATUS_INBOUND_DONE, today, inboundId);
     db.prepare('UPDATE receiving_notes SET status = ? WHERE id = ?').run(STATUS_INBOUND_DONE, inbound.receivingNoteId);
-    recalculatePurchaseOrderStatus(inbound.purchaseOrderId);
+    loadSourcePurchaseOrderIdsForReceivingNote(inbound.receivingNoteId).forEach((purchaseOrderId) => {
+      recalculatePurchaseOrderStatus(purchaseOrderId);
+    });
 
     appendAuditLog('confirm_inbound', 'inbound_order', inboundId, {
       receivingNoteId: inbound.receivingNoteId,
@@ -703,7 +754,9 @@ export function forceUpdateInboundStatus(inboundId: string, nextStatus: string) 
       db.prepare('UPDATE inbound_orders SET status = ? WHERE id = ?').run(nextStatus, inboundId);
     }
 
-    recalculatePurchaseOrderStatus(inbound.purchaseOrderId);
+    loadSourcePurchaseOrderIdsForReceivingNote(inbound.receivingNoteId).forEach((purchaseOrderId) => {
+      recalculatePurchaseOrderStatus(purchaseOrderId);
+    });
     appendAuditLog('force_update_inbound_status', 'inbound_order', inboundId, {
       previousStatus: inbound.status,
       nextStatus,
@@ -763,113 +816,133 @@ export function createManualInboundOrders(payloadItems: CreateManualInboundItemP
   const sourceMap = new Map(
     loadManualInboundSourcesV2().map((item) => [`${item.purchaseOrderId}::${item.purchaseOrderItemId}`, item]),
   );
+  const selectedItems: Array<ManualInboundCandidateItem & { inboundQty: number; source: ManualInboundSourceRow }> = [];
   const selectedKeys = new Set<string>();
-  const selectedByInbound = new Map<string, string[]>();
-  const availableKeysByInbound = new Map<string, string[]>();
   const shelfRemainingByWarehouse = new Map<string, Map<string, number>>();
 
-  availableItems.forEach((item) => {
-    const key = `${item.purchaseOrderId}::${item.purchaseOrderItemId}`;
-    const source = sourceMap.get(key);
-    if (!source) {
-      return;
+  payloadItems.forEach((item, index) => {
+    const purchaseOrderId = String(item.purchaseOrderId || '').trim();
+    const purchaseOrderItemId = String(item.purchaseOrderItemId || '').trim();
+    const inboundQty = Number(item.arrivedQty);
+    const key = `${purchaseOrderId}::${purchaseOrderItemId}`;
+    if (!purchaseOrderId || !purchaseOrderItemId) {
+      throw new Error(`第 ${index + 1} 行缺少采购单号或商品明细。`);
     }
-    const currentKeys = availableKeysByInbound.get(source.inboundId) ?? [];
-    currentKeys.push(key);
-    availableKeysByInbound.set(source.inboundId, currentKeys);
+    if (!Number.isInteger(inboundQty) || inboundQty <= 0) {
+      throw new Error(`第 ${index + 1} 行入库数量必须为正整数。`);
+    }
+    if (selectedKeys.has(key)) {
+      throw new Error(`采购明细 ${purchaseOrderItemId} 被重复选择。`);
+    }
+
+    const available = availableMap.get(key);
+    const source = sourceMap.get(key);
+    if (!available || !source) {
+      throw new Error(`采购明细 ${purchaseOrderItemId} 当前不可用于创建入库单。`);
+    }
+    if (inboundQty > available.remainingQty) {
+      throw new Error(`${available.sku} 的本次入库数量不能超过未入库数量 ${available.remainingQty}。`);
+    }
+
+    selectedKeys.add(key);
+    selectedItems.push({ ...available, inboundQty, source });
   });
 
+  if (selectedItems.length === 0) {
+    throw new Error('请选择至少一条待入库明细。');
+  }
+
+  const today = currentDateString();
+  let targetArrivalId = '';
+  let targetInboundId = '';
+
   const transaction = db.transaction(() => {
-    payloadItems.forEach((item, index) => {
-      const purchaseOrderId = String(item.purchaseOrderId || '').trim();
-      const purchaseOrderItemId = String(item.purchaseOrderItemId || '').trim();
-      const inboundQty = Number(item.arrivedQty);
-      if (!purchaseOrderId || !purchaseOrderItemId) {
-        throw new Error(`第 ${index + 1} 行缺少采购单号或商品明细。`);
+    const firstItem = selectedItems[0];
+    const firstSourceInbound = loadInbound(firstItem.source.inboundId);
+    if (!firstSourceInbound) {
+      throw new Error(`入库单 ${firstItem.source.inboundId} 不存在。`);
+    }
+
+    const totalInboundQty = selectedItems.reduce((sum, item) => sum + item.inboundQty, 0);
+    targetArrivalId = nextDocumentId('receiving_notes', 'RCV', today);
+    targetInboundId = nextDocumentId('inbound_orders', 'INB', today);
+
+    db.prepare(
+      'INSERT INTO receiving_notes (id, purchase_order_id, supplier_id, expected_qty, arrived_qty, qualified_qty, defect_qty, status, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      targetArrivalId,
+      firstItem.purchaseOrderId,
+      firstItem.supplierId,
+      totalInboundQty,
+      totalInboundQty,
+      totalInboundQty,
+      0,
+      STATUS_RECEIVING_PENDING_INBOUND,
+      today,
+    );
+
+    db.prepare(
+      'INSERT INTO inbound_orders (id, receiving_note_id, warehouse_id, inbound_qty, status, completed_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(targetInboundId, targetArrivalId, firstSourceInbound.warehouseId, totalInboundQty, STATUS_PENDING_INBOUND, null);
+
+    const insertTargetItem = db.prepare(
+      'INSERT INTO receiving_note_items (id, receiving_note_id, purchase_order_item_id, product_id, expected_qty, arrived_qty, qualified_qty, defect_qty, inbound_qty, shelf_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const affectedSourceInboundIds = new Set<string>();
+
+    selectedItems.forEach((item, index) => {
+      const sourceInbound = loadInbound(item.source.inboundId);
+      if (!sourceInbound) {
+        throw new Error(`入库单 ${item.source.inboundId} 不存在。`);
       }
-      if (!Number.isInteger(inboundQty) || inboundQty <= 0) {
-        throw new Error(`第 ${index + 1} 行入库数量必须为正整数。`);
+      const shelfId = reserveAutoShelf(
+        item.productId,
+        firstSourceInbound.warehouseId,
+        item.inboundQty,
+        shelfRemainingByWarehouse,
+      );
+      if (!shelfId) {
+        throw new Error(`没有可用货架可容纳 ${item.sku} 的入库数量 ${item.inboundQty}。`);
       }
 
-      const available = availableMap.get(`${purchaseOrderId}::${purchaseOrderItemId}`);
-      const source = sourceMap.get(`${purchaseOrderId}::${purchaseOrderItemId}`);
-      if (!available || !source) {
-        throw new Error(`采购明细 ${purchaseOrderItemId} 当前不可用于创建入库单。`);
-      }
-      if (inboundQty > available.remainingQty) {
-        throw new Error(`${available.sku} 的本次入库数量不能超过未入库数量 ${available.remainingQty}。`);
-      }
-      if (inboundQty !== available.remainingQty) {
-        throw new Error(`${available.sku} 若需部分入库，请进入下方入库单据页处理；创建入库单仅支持一次性完成当前剩余数量。`);
-      }
-
-      const key = `${purchaseOrderId}::${purchaseOrderItemId}`;
-      selectedKeys.add(key);
-      const currentSelected = selectedByInbound.get(source.inboundId) ?? [];
-      currentSelected.push(key);
-      selectedByInbound.set(source.inboundId, currentSelected);
+      db.prepare('UPDATE receiving_note_items SET inbound_qty = ? WHERE id = ?').run(
+        item.source.inboundQty + item.inboundQty,
+        item.source.receivingNoteItemId,
+      );
+      insertTargetItem.run(
+        `${targetArrivalId}-ITEM-${index + 1}`,
+        targetArrivalId,
+        item.purchaseOrderItemId,
+        item.productId,
+        item.inboundQty,
+        item.inboundQty,
+        item.inboundQty,
+        0,
+        item.inboundQty,
+        shelfId,
+      );
+      affectedSourceInboundIds.add(item.source.inboundId);
     });
 
-    selectedByInbound.forEach((keys, inboundId) => {
-      const allKeys = availableKeysByInbound.get(inboundId) ?? [];
-      const missingKey = allKeys.find((key) => !selectedKeys.has(key));
-      if (missingKey) {
-        throw new Error(`入库单 ${inboundId} 仍有未选择的剩余商品，请整单完成，或进入单据页逐项入库。`);
-      }
-      keys.forEach((key) => {
-        const available = availableMap.get(key);
-        const source = sourceMap.get(key);
-        if (!available || !source) {
-          throw new Error(`采购明细 ${key} 当前不可用于创建入库单。`);
-        }
-        const inbound = loadInbound(source.inboundId);
-        if (!inbound) {
-          throw new Error(`入库单 ${source.inboundId} 不存在。`);
-        }
-        const shelfId = reserveAutoShelf(
-          available.productId,
-          inbound.warehouseId,
-          available.remainingQty,
-          shelfRemainingByWarehouse,
-        );
-        db.prepare('UPDATE receiving_note_items SET inbound_qty = ?, shelf_id = ? WHERE id = ?').run(
-          source.inboundQty + available.remainingQty,
-          shelfId,
-          source.receivingNoteItemId,
-        );
-      });
-    });
+    affectedSourceInboundIds.forEach((inboundId) => refreshSourceInboundAfterFlow(inboundId));
 
-    selectedByInbound.forEach((_keys, inboundId) => {
-      const inbound = loadInbound(inboundId);
-      if (!inbound) {
-        throw new Error(`入库单 ${inboundId} 不存在。`);
-      }
-      const totalInboundQty =
-        db
-          .prepare<{ total: number }>('SELECT COALESCE(SUM(inbound_qty), 0) as total FROM receiving_note_items WHERE receiving_note_id = ?')
-          .get(inbound.receivingNoteId)?.total ?? 0;
-      db.prepare('UPDATE inbound_orders SET inbound_qty = ? WHERE id = ?').run(totalInboundQty, inboundId);
-    });
-
-    appendAuditLog('create_manual_inbound_orders', 'inbound_order', Array.from(selectedByInbound.keys()).join(','), {
-      inboundIds: Array.from(selectedByInbound.keys()),
-      arrivalIds: Array.from(selectedByInbound.keys()).map((inboundId) => loadInbound(inboundId)?.receivingNoteId).filter(Boolean),
-      purchaseOrderCount: new Set(payloadItems.map((item) => item.purchaseOrderId)).size,
-      itemCount: payloadItems.length,
+    appendAuditLog('create_manual_inbound_orders', 'inbound_order', targetInboundId, {
+      inboundIds: [targetInboundId],
+      arrivalIds: [targetArrivalId],
+      sourceInboundIds: Array.from(affectedSourceInboundIds),
+      sourceArrivalIds: Array.from(affectedSourceInboundIds).map((inboundId) => loadInbound(inboundId)?.receivingNoteId).filter(Boolean),
+      purchaseOrderCount: new Set(selectedItems.map((item) => item.purchaseOrderId)).size,
+      itemCount: selectedItems.length,
     });
   });
 
   transaction();
 
-  const inboundIds = Array.from(selectedByInbound.keys());
-  const confirmedInboundIds = inboundIds.map((inboundId) => confirmInbound(inboundId).id);
-  const arrivalIds = confirmedInboundIds
-    .map((inboundId) => loadInbound(inboundId)?.receivingNoteId)
-    .filter((value): value is string => Boolean(value));
+  const confirmedInboundId = confirmInbound(targetInboundId).id;
+  const arrivalId = loadInbound(confirmedInboundId)?.receivingNoteId ?? targetArrivalId;
 
   return {
-    inboundIds: confirmedInboundIds,
-    arrivalIds,
+    inboundIds: [confirmedInboundId],
+    arrivalIds: [arrivalId],
   };
 }

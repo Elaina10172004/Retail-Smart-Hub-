@@ -9,6 +9,7 @@ export interface OrderRecord {
   status: OrderStatus;
   stockStatus: StockStatus;
   itemCount: number;
+  productSummary?: string;
   expectedDeliveryDate?: string;
   remark?: string;
 }

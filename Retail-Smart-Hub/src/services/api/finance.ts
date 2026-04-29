@@ -1,5 +1,6 @@
 import { apiClient } from '@/services/api/client';
 import type { ApiEnvelope } from '@/types/api';
+import { type MaybePaginated, unwrapPaginatedEnvelope } from '@/services/api/pagination';
 import type {
   FinanceActionPayload,
   FinanceOverview,
@@ -15,8 +16,9 @@ export function fetchFinanceOverview() {
   return apiClient.get<ApiEnvelope<FinanceOverview>>('/finance/overview');
 }
 
-export function fetchReceivables() {
-  return apiClient.get<ApiEnvelope<ReceivableRecord[]>>('/finance/receivables');
+export async function fetchReceivables() {
+  const response = await apiClient.get<ApiEnvelope<MaybePaginated<ReceivableRecord>>>('/finance/receivables?pageSize=100');
+  return unwrapPaginatedEnvelope(response);
 }
 
 export function fetchReceivableDetail(id: string) {
@@ -28,8 +30,9 @@ export function fetchReceiptRecords(receivableId?: string) {
   return apiClient.get<ApiEnvelope<ReceiptRecord[]>>(`/finance/receipts${suffix}`);
 }
 
-export function fetchPayables() {
-  return apiClient.get<ApiEnvelope<PayableRecord[]>>('/finance/payables');
+export async function fetchPayables() {
+  const response = await apiClient.get<ApiEnvelope<MaybePaginated<PayableRecord>>>('/finance/payables?pageSize=100');
+  return unwrapPaginatedEnvelope(response);
 }
 
 export function fetchPayableDetail(id: string) {

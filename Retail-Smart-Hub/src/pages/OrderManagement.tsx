@@ -13,7 +13,8 @@ import { DocumentWorkspaceShell } from '@/components/documents/DocumentWorkspace
 import { useAuth } from '@/auth/AuthContext';
 import { buildOrderDocument } from '@/lib/documents';
 import { formatCurrency } from '@/lib/format';
-import { matchesSearchQuery } from '@/lib/search';
+import { Pagination } from '@/components/ui/pagination';
+import type { PaginatedData } from '@/types/api';
 import {
   CheckCircle2,
   CopyPlus,
@@ -33,6 +34,7 @@ import {
   fetchOrderDetail,
   fetchOrderFormOptions,
   fetchOrders,
+  fetchOrdersPaginated,
   updateOrderStatus,
 } from '@/services/api/orders';
 import type { DocumentPreviewRecord } from '@/types/documents';
@@ -43,7 +45,7 @@ import type {
   OrderRecord,
 } from '@/types/orders';
 
-const pageSize = 8;
+const PAGE_SIZE = 20;
 
 function createEmptyItem(seed = Date.now()): OrderItemDraft {
   return {
@@ -81,7 +83,7 @@ export function OrderManagement() {
   const isSuperAdmin = Boolean(user && (user.username === 'admin' || user.roles.includes('系统管理员')));
   const canCreateOrders = hasPermission('orders.create');
   const canDeleteOrders = isSuperAdmin;
-  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [ordersData, setOrdersData] = useState<PaginatedData<OrderRecord> | null>(null);
   const [formOptions, setFormOptions] = useState<OrderFormOptions>({ customers: [], products: [] });
   const [previewDocuments, setPreviewDocuments] = useState<DocumentPreviewRecord[]>([]);
   const [previewInitialId, setPreviewInitialId] = useState('');
@@ -90,6 +92,7 @@ export function OrderManagement() {
   const [statusFilter, setStatusFilter] = useState('');
   const [orderDateFilter, setOrderDateFilter] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const orders = ordersData?.items ?? [];
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [customerId, setCustomerId] = useState('');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
@@ -137,27 +140,14 @@ export function OrderManagement() {
     [items],
   );
 
+  // Client-side dropdown filter only (search is server-side)
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
-      const matchesSearch = matchesSearchQuery(searchTerm, [order.id, order.customer]);
       const matchesStatus = !statusFilter || order.status === statusFilter;
       const matchesDate = !orderDateFilter || order.date === orderDateFilter;
-
-      return matchesSearch && matchesStatus && matchesDate;
+      return matchesStatus && matchesDate;
     });
-  }, [orders, orderDateFilter, searchTerm, statusFilter]);
-
-  const totalPages = Math.max(Math.ceil(filteredOrders.length / pageSize), 1);
-  const paginatedOrders = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredOrders.slice(start, start + pageSize);
-  }, [currentPage, filteredOrders]);
-
-  useEffect(() => {
-    if (currentPage > totalPages) {
-      setCurrentPage(totalPages);
-    }
-  }, [currentPage, totalPages]);
+  }, [orders, orderDateFilter, statusFilter]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -175,14 +165,18 @@ export function OrderManagement() {
   };
 
   const loadOrders = async () => {
+    const pageParams = { page: currentPage, pageSize: PAGE_SIZE, search: searchTerm };
     if (canCreateOrders) {
-      const [ordersResponse] = await Promise.all([fetchOrders(), loadFormOptions()]);
-      setOrders(ordersResponse.data);
+      const [ordersResponse] = await Promise.all([
+        fetchOrdersPaginated(pageParams),
+        loadFormOptions(),
+      ]);
+      setOrdersData(ordersResponse.data);
       return;
     }
 
-    const response = await fetchOrders();
-    setOrders(response.data);
+    const response = await fetchOrdersPaginated(pageParams);
+    setOrdersData(response.data);
   };
 
   const loadPageData = async () => {
@@ -422,7 +416,7 @@ export function OrderManagement() {
 
     try {
       const response = await createOrder(payload);
-      setOrders((current) => [response.data, ...current]);
+      setOrdersData((current) => current ? { ...current, items: [response.data, ...current.items], total: current.total + 1 } : null);
       setFormSuccess(`订单 ${response.data.id} 已创建，并已写入后端订单列表。`);
       const detailResponse = await fetchOrderDetail(response.data.id);
       openPreview([buildOrderDocument(detailResponse.data)], detailResponse.data.id);
@@ -700,17 +694,9 @@ export function OrderManagement() {
           </>
         }
         footer={
-          <div className="flex items-center justify-between gap-4">
-            <div className="text-sm text-gray-500">当前显示第 {currentPage} / {totalPages} 页，共 {filteredOrders.length} 条订单记录</div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" className="border-gray-300 text-gray-700 hover:bg-gray-50" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => Math.max(page - 1, 1))}>
-                上一页
-              </Button>
-              <Button variant="outline" size="sm" className="border-gray-300 text-gray-700 hover:bg-gray-50" disabled={currentPage >= totalPages} onClick={() => setCurrentPage((page) => Math.min(page + 1, totalPages))}>
-                下一页
-              </Button>
-            </div>
-          </div>
+          ordersData ? (
+            <Pagination page={ordersData.page} totalPages={ordersData.totalPages} total={ordersData.total} pageSize={ordersData.pageSize} onPageChange={setCurrentPage} />
+          ) : null
         }
       >
           <Table>
@@ -729,7 +715,7 @@ export function OrderManagement() {
             <TableBody>
               {isLoading ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载订单列表...</TableCell></TableRow> : null}
               {!isLoading && filteredOrders.length === 0 ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有订单记录。</TableCell></TableRow> : null}
-              {!isLoading ? paginatedOrders.map((order) => (
+              {!isLoading ? filteredOrders.map((order) => (
                 <TableRow key={order.id} className="transition-colors hover:bg-blue-50/30">
                   <TableCell className="font-medium text-blue-600">{order.id}</TableCell>
                   <TableCell className="text-gray-900">{order.customer}</TableCell>

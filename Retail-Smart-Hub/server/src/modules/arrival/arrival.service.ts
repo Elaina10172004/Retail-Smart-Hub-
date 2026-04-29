@@ -397,6 +397,29 @@ function refreshReceivingNoteProgress(receivingNoteId: string) {
   recalculatePurchaseOrdersForReceivingNote(receivingNoteId);
 }
 
+function refreshSourceReceivingNoteAfterAcceptanceFlow(receivingNoteId: string) {
+  const totals =
+    db.prepare<{ arrivedQty: number; qualifiedQty: number; expectedQty: number }>(`
+      SELECT
+        COALESCE(SUM(expected_qty), 0) as expectedQty,
+        COALESCE(SUM(arrived_qty), 0) as arrivedQty,
+        COALESCE(SUM(qualified_qty), 0) as qualifiedQty
+      FROM receiving_note_items
+      WHERE receiving_note_id = ?
+    `).get(receivingNoteId) ?? { expectedQty: 0, arrivedQty: 0, qualifiedQty: 0 };
+
+  const nextStatus =
+    totals.arrivedQty > 0 && totals.qualifiedQty >= totals.arrivedQty
+      ? ARRIVAL_STATUS_PENDING_INBOUND
+      : ARRIVAL_STATUS_PENDING;
+
+  db.prepare(
+    'UPDATE receiving_notes SET expected_qty = ?, arrived_qty = ?, qualified_qty = ?, defect_qty = 0, status = ? WHERE id = ?',
+  ).run(totals.expectedQty, totals.arrivedQty, totals.qualifiedQty, nextStatus, receivingNoteId);
+  db.prepare('DELETE FROM inbound_orders WHERE receiving_note_id = ? AND status <> ?').run(receivingNoteId, ARRIVAL_STATUS_INBOUND_DONE);
+  recalculatePurchaseOrdersForReceivingNote(receivingNoteId);
+}
+
 export function listManualArrivalCandidateItems() {
   normalizeLegacyArrivalStates();
   normalizePendingArrivalCandidates();
@@ -408,12 +431,14 @@ function createAcceptanceFromPendingArrivals(payloadItems: CreateManualArrivalIt
   const availableMap = new Map(
     availableItems.map((item) => [`${item.purchaseOrderId}::${item.purchaseOrderItemId}`, item]),
   );
-  const groupedByArrival = new Map<string, Array<ManualArrivalCandidateItem & { acceptedQty: number }>>();
+  const selectedItems: Array<ManualArrivalCandidateItem & { acceptedQty: number; arrivalId: string }> = [];
+  const selectedKeys = new Set<string>();
 
   payloadItems.forEach((item, index) => {
     const purchaseOrderId = String(item.purchaseOrderId || '').trim();
     const purchaseOrderItemId = String(item.purchaseOrderItemId || '').trim();
     const acceptedQty = Number(item.arrivedQty);
+    const key = `${purchaseOrderId}::${purchaseOrderItemId}`;
 
     if (!purchaseOrderId || !purchaseOrderItemId) {
       throw new Error(`第 ${index + 1} 行缺少采购单号或商品明细。`);
@@ -421,8 +446,11 @@ function createAcceptanceFromPendingArrivals(payloadItems: CreateManualArrivalIt
     if (!Number.isInteger(acceptedQty) || acceptedQty <= 0) {
       throw new Error(`第 ${index + 1} 行验收数量必须为正整数。`);
     }
+    if (selectedKeys.has(key)) {
+      throw new Error(`采购明细 ${purchaseOrderItemId} 被重复选择。`);
+    }
 
-    const available = availableMap.get(`${purchaseOrderId}::${purchaseOrderItemId}`);
+    const available = availableMap.get(key);
     if (!available || !available.arrivalId) {
       throw new Error(`采购明细 ${purchaseOrderItemId} 当前不可用于创建验收单。`);
     }
@@ -430,47 +458,87 @@ function createAcceptanceFromPendingArrivals(payloadItems: CreateManualArrivalIt
       throw new Error(`${available.sku} 的本次验收数量不能超过待验收数量 ${available.remainingQty}。`);
     }
 
-    const currentGroup = groupedByArrival.get(available.arrivalId) ?? [];
-    currentGroup.push({ ...available, acceptedQty });
-    groupedByArrival.set(available.arrivalId, currentGroup);
+    selectedKeys.add(key);
+    selectedItems.push({ ...available, arrivalId: available.arrivalId, acceptedQty });
   });
 
+  if (selectedItems.length === 0) {
+    throw new Error('请选择至少一条待验收明细。');
+  }
+
+  const today = currentDateString();
+  let targetArrivalId = '';
+
   const transaction = db.transaction(() => {
+    const firstItem = selectedItems[0];
+    const totalAcceptedQty = selectedItems.reduce((sum, item) => sum + item.acceptedQty, 0);
+    targetArrivalId = nextDocumentId('receiving_notes', 'RCV', today);
+
+    db.prepare(
+      'INSERT INTO receiving_notes (id, purchase_order_id, supplier_id, expected_qty, arrived_qty, qualified_qty, defect_qty, status, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      targetArrivalId,
+      firstItem.purchaseOrderId,
+      firstItem.supplierId,
+      totalAcceptedQty,
+      totalAcceptedQty,
+      totalAcceptedQty,
+      0,
+      ARRIVAL_STATUS_PENDING_INBOUND,
+      today,
+    );
+
     const updateReceivingItem = db.prepare(
       'UPDATE receiving_note_items SET qualified_qty = ?, defect_qty = ? WHERE id = ?',
     );
+    const insertTargetItem = db.prepare(
+      'INSERT INTO receiving_note_items (id, receiving_note_id, purchase_order_item_id, product_id, expected_qty, arrived_qty, qualified_qty, defect_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const affectedSourceArrivalIds = new Set<string>();
 
-    groupedByArrival.forEach((items, arrivalId) => {
-      items.forEach((item) => {
-        const row = db.prepare<{ id: string; arrivedQty: number; qualifiedQty: number }>(`
-          SELECT id, arrived_qty as arrivedQty, qualified_qty as qualifiedQty
-          FROM receiving_note_items
-          WHERE receiving_note_id = ? AND purchase_order_item_id = ?
-        `).get(arrivalId, item.purchaseOrderItemId);
+    selectedItems.forEach((item, index) => {
+      const row = db.prepare<{ id: string; arrivedQty: number; qualifiedQty: number }>(`
+        SELECT id, arrived_qty as arrivedQty, qualified_qty as qualifiedQty
+        FROM receiving_note_items
+        WHERE receiving_note_id = ? AND purchase_order_item_id = ?
+      `).get(item.arrivalId, item.purchaseOrderItemId);
 
-        if (!row) {
-          throw new Error(`验收单 ${arrivalId} 中不存在商品明细 ${item.purchaseOrderItemId}。`);
-        }
+      if (!row) {
+        throw new Error(`验收单 ${item.arrivalId} 中不存在商品明细 ${item.purchaseOrderItemId}。`);
+      }
 
-        const nextQualifiedQty = row.qualifiedQty + item.acceptedQty;
-        if (nextQualifiedQty > row.arrivedQty) {
-          throw new Error(`${item.sku} 的累计验收数量不能超过到货数量 ${row.arrivedQty}。`);
-        }
+      const nextQualifiedQty = row.qualifiedQty + item.acceptedQty;
+      if (nextQualifiedQty > row.arrivedQty) {
+        throw new Error(`${item.sku} 的累计验收数量不能超过到货数量 ${row.arrivedQty}。`);
+      }
 
-        updateReceivingItem.run(nextQualifiedQty, 0, row.id);
-      });
-
-      refreshReceivingNoteProgress(arrivalId);
+      updateReceivingItem.run(nextQualifiedQty, 0, row.id);
+      insertTargetItem.run(
+        `${targetArrivalId}-ITEM-${index + 1}`,
+        targetArrivalId,
+        item.purchaseOrderItemId,
+        item.productId,
+        item.acceptedQty,
+        item.acceptedQty,
+        item.acceptedQty,
+        0,
+      );
+      affectedSourceArrivalIds.add(item.arrivalId);
     });
 
-    appendAuditLog('create_manual_arrival_records', 'receiving_note', Array.from(groupedByArrival.keys()).join(','), {
-      arrivalIds: Array.from(groupedByArrival.keys()),
+    affectedSourceArrivalIds.forEach((arrivalId) => refreshSourceReceivingNoteAfterAcceptanceFlow(arrivalId));
+    upsertInbound(targetArrivalId, totalAcceptedQty);
+
+    appendAuditLog('create_manual_arrival_records', 'receiving_note', targetArrivalId, {
+      arrivalIds: [targetArrivalId],
+      sourceArrivalIds: Array.from(affectedSourceArrivalIds),
+      sourcePurchaseOrderIds: Array.from(new Set(selectedItems.map((item) => item.purchaseOrderId))),
       itemCount: payloadItems.length,
     });
   });
 
   transaction();
-  return { arrivalIds: Array.from(groupedByArrival.keys()) };
+  return { arrivalIds: [targetArrivalId] };
 }
 
 function upsertReceivingNoteItems(receivingNoteId: string, poId: string) {
