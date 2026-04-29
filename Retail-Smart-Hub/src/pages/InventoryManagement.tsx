@@ -11,6 +11,7 @@ import { useAuth } from '@/auth/AuthContext';
 import { adjustInventory, deleteInventory, fetchInventoryAlerts, fetchInventoryDetail, fetchInventoryList, fetchInventoryOverview, fetchInventoryShelves } from '@/services/api/inventory';
 import type { InventoryAlert, InventoryDetailRecord, InventoryItem, InventoryOverview, InventoryShelfOverviewRecord, InventoryStatus } from '@/types/inventory';
 import { downloadCsv } from '@/lib/export';
+import { matchesSearchQuery } from '@/lib/search';
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试。';
@@ -69,13 +70,8 @@ export function InventoryManagement() {
   const categories = useMemo(() => Array.from(new Set(inventory.map((item) => item.category))), [inventory]);
 
   const filteredInventory = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
     return inventory.filter((item) => {
-      const matchesSearch =
-        !keyword ||
-        item.id.toLowerCase().includes(keyword) ||
-        item.name.toLowerCase().includes(keyword) ||
-        item.shelfSummary.toLowerCase().includes(keyword);
+      const matchesSearch = matchesSearchQuery(searchTerm, [item.id, item.name, item.shelfSummary]);
       const matchesCategory = !categoryFilter || item.category === categoryFilter;
       const matchesStatus = !statusFilter || item.status === statusFilter;
       return matchesSearch && matchesCategory && matchesStatus;

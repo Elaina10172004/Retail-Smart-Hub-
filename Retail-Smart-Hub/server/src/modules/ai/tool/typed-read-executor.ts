@@ -52,6 +52,25 @@ function toKeyword(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function searchTokens(value: unknown) {
+  return toKeyword(value)
+    .toLowerCase()
+    .split(/[\s\u3000]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function matchesSearchTokens(tokens: string[], values: Array<string | number | null | undefined>) {
+  if (tokens.length === 0) {
+    return true;
+  }
+  const haystack = values
+    .filter((value) => value !== null && value !== undefined)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+  return tokens.every((token) => haystack.includes(token));
+}
+
 function toMemoryScopeType(value: unknown): ProfileMemoryScope {
   if (value === 'global' || value === 'tenant' || value === 'session') {
     return value;
@@ -199,15 +218,9 @@ export function executeTypedReadOnlyTool(request: TypedReadOnlyToolRequest): Typ
       }
       case 'query_inventory_item': {
         const sku = toKeyword(args.sku);
-        const keyword = toKeyword(args.keyword).toLowerCase();
+        const tokens = searchTokens(args.keyword);
         const rows = (sku ? [getInventoryDetail(sku)].filter(Boolean) : listInventory())
-          .filter((item) => {
-            if (!keyword) {
-              return true;
-            }
-            const text = `${item?.id || ''} ${item?.name || ''}`.toLowerCase();
-            return text.includes(keyword);
-          })
+          .filter((item) => matchesSearchTokens(tokens, [item?.id, item?.name, item?.category, item?.shelfSummary]))
           .slice(0, toNumberLimit(args.limit, 20)) as Array<Record<string, unknown>>;
         return {
           toolCall: { name: toolName, status: 'completed', summary: `已返回 ${rows.length} 条库存项。` },
@@ -286,15 +299,13 @@ export function executeTypedReadOnlyTool(request: TypedReadOnlyToolRequest): Typ
         };
       }
       case 'list_customers': {
-        const keyword = toKeyword(args.keyword).toLowerCase();
+        const tokens = searchTokens(args.keyword);
         const status = toKeyword(args.status);
         const phone = toKeyword(args.phone);
         const rows = listCustomers()
           .filter((item) => (!status ? true : item.status === status))
           .filter((item) => (!phone ? true : item.phone === phone))
-          .filter((item) =>
-            !keyword ? true : `${item.name} ${item.contactName} ${item.channelPreference}`.toLowerCase().includes(keyword),
-          )
+          .filter((item) => matchesSearchTokens(tokens, [item.id, item.name, item.contactName, item.channelPreference, item.phone]))
           .slice(0, toNumberLimit(args.limit, 20));
         return {
           toolCall: { name: toolName, status: 'completed', summary: `已返回 ${rows.length} 条客户。` },

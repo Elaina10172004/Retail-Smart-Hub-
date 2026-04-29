@@ -16,6 +16,7 @@ import { appModules, filterModulesByPermissions, findModuleById, type AppModuleI
 import { fetchNotifications } from '@/services/api/system';
 import type { SystemNotificationRecord } from '@/types/auth';
 import { cn } from '@/lib/utils';
+import { buildSearchTokens, matchesSearchTokens } from '@/lib/search';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -114,10 +115,10 @@ export function Layout({ children, activeMenu, setActiveMenu }: LayoutProps) {
     [readIds, visibleNotificationIds],
   );
   const searchResults = useMemo(() => {
-    const keyword = searchQuery.trim().toLowerCase();
+    const tokens = buildSearchTokens(searchQuery);
     const matchedModules = visibleModules
-      .filter((module) => !keyword || module.label.toLowerCase().includes(keyword) || module.id.toLowerCase().includes(keyword))
-      .slice(0, keyword ? 6 : 4)
+      .filter((module) => matchesSearchTokens(tokens, [module.label, module.id]))
+      .slice(0, tokens.length > 0 ? 6 : 4)
       .map((module) => ({
         key: `module:${module.id}`,
         type: 'module' as const,
@@ -127,14 +128,13 @@ export function Layout({ children, activeMenu, setActiveMenu }: LayoutProps) {
       }));
     const matchedNotifications = visibleNotifications
       .filter((notification) => {
-        if (!keyword) {
+        if (tokens.length === 0) {
           return !readIds.includes(notification.id);
         }
 
-        const haystack = `${notification.title} ${notification.description} ${notification.moduleId}`.toLowerCase();
-        return haystack.includes(keyword);
+        return matchesSearchTokens(tokens, [notification.title, notification.description, notification.moduleId]);
       })
-      .slice(0, keyword ? 6 : 3)
+      .slice(0, tokens.length > 0 ? 6 : 3)
       .map((notification) => ({
         key: `notification:${notification.id}`,
         type: 'notification' as const,

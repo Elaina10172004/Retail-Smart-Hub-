@@ -11,6 +11,7 @@ import { RowActionMenu } from '@/components/RowActionMenu';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { useAuth } from '@/auth/AuthContext';
 import { buildArrivalDocument, buildInboundDocument } from '@/lib/documents';
+import { matchesSearchQuery } from '@/lib/search';
 import { advanceArrival, createManualArrival, fetchArrivalDetail, fetchArrivals, fetchManualArrivalCreateOptions } from '@/services/api/arrival';
 import { createManualInbound, fetchManualInboundCreateOptions } from '@/services/api/inbound';
 import { confirmInbound, deleteInbound, fetchInboundDetail, fetchInbounds, saveInboundDraft, updateInboundStatus } from '@/services/api/inbound';
@@ -108,13 +109,7 @@ export function InboundManagement() {
   const filteredInbounds = useMemo(
     () =>
       inbounds.filter((item) => {
-        const keyword = searchTerm.trim().toLowerCase();
-        const matchesSearch =
-          !keyword ||
-          item.id.toLowerCase().includes(keyword) ||
-          item.rcvId.toLowerCase().includes(keyword) ||
-          item.supplier.toLowerCase().includes(keyword) ||
-          item.warehouse.toLowerCase().includes(keyword);
+        const matchesSearch = matchesSearchQuery(searchTerm, [item.id, item.rcvId, item.supplier, item.warehouse]);
         const matchesStatus = !statusFilter || item.status === statusFilter;
         return matchesSearch && matchesStatus;
       }),
@@ -124,13 +119,7 @@ export function InboundManagement() {
   const filteredArrivals = useMemo(
     () =>
       arrivals.filter((item) => {
-        const keyword = searchTerm.trim().toLowerCase();
-        return (
-          !keyword ||
-          item.id.toLowerCase().includes(keyword) ||
-          item.poId.toLowerCase().includes(keyword) ||
-          item.supplier.toLowerCase().includes(keyword)
-        );
+        return matchesSearchQuery(searchTerm, [item.id, item.poId, item.supplier]);
       }),
     [arrivals, searchTerm],
   );

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Layout } from './components/Layout';
+import { PageErrorBoundary } from '@/components/PageErrorBoundary';
 import { AuthContext } from '@/auth/AuthContext';
 import { appModules, defaultModuleId, filterModulesByPermissions, findModuleById } from '@/config/modules';
 import { getCurrentPathname, getModulePath, LOGIN_PATH, resolveModuleFromPath } from '@/router/navigation';
@@ -207,7 +208,9 @@ export default function App() {
   return (
     <AuthContext.Provider value={authValue}>
       <Layout activeMenu={resolvedActiveMenu} setActiveMenu={(menu) => syncPathname(getModulePath(menu))}>
-        <ActivePage />
+        <PageErrorBoundary resetKey={resolvedActiveMenu}>
+          <ActivePage />
+        </PageErrorBoundary>
       </Layout>
     </AuthContext.Provider>
   );

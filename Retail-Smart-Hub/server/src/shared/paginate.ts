@@ -32,7 +32,7 @@ export function paginateList<T>(
   // By default, ALL string fields on each row are searchable.
   // Provide searchFields to restrict which fields are searched.
   if (search) {
-    const keywords = search.split(/[\s+]+/).map((k) => k.trim()).filter(Boolean);
+    const keywords = search.split(/[\s\u3000]+/).map((k) => k.trim()).filter(Boolean);
     if (keywords.length > 0) {
       const targetFields = options?.searchFields?.length ? options.searchFields : null;
       rows = rows.filter((row) => {

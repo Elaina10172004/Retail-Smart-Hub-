@@ -13,6 +13,7 @@ import { DocumentWorkspaceShell } from '@/components/documents/DocumentWorkspace
 import { useAuth } from '@/auth/AuthContext';
 import { buildOrderDocument } from '@/lib/documents';
 import { formatCurrency } from '@/lib/format';
+import { matchesSearchQuery } from '@/lib/search';
 import {
   CheckCircle2,
   CopyPlus,
@@ -138,10 +139,7 @@ export function OrderManagement() {
 
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
-      const matchesSearch =
-        !searchTerm ||
-        order.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        order.customer.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesSearch = matchesSearchQuery(searchTerm, [order.id, order.customer]);
       const matchesStatus = !statusFilter || order.status === statusFilter;
       const matchesDate = !orderDateFilter || order.date === orderDateFilter;
 

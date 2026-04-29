@@ -9,6 +9,7 @@ import { RowActionMenu } from '@/components/RowActionMenu';
 import { useAuth } from '@/auth/AuthContext';
 import { formatCurrency } from '@/lib/format';
 import { parseImportFile } from '@/lib/import';
+import { matchesSearchQuery } from '@/lib/search';
 import {
   createCustomer,
   deleteCustomer,
@@ -61,13 +62,13 @@ export function CustomerProfiles() {
 
   const filteredCustomers = useMemo(() => {
     return customers.filter((item) => {
-      const matchesSearch =
-        !searchTerm ||
-        item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.channelPreference.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.contactName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.phone.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesSearch = matchesSearchQuery(searchTerm, [
+        item.id,
+        item.name,
+        item.channelPreference,
+        item.contactName,
+        item.phone,
+      ]);
       const matchesStatus = !statusFilter || item.status === statusFilter;
       const matchesType = !typeFilter || item.customerType === typeFilter;
       return matchesSearch && matchesStatus && matchesType;

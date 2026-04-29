@@ -24,7 +24,7 @@ export function extractPaginationParams(query: Record<string, unknown>): Paginat
 export function parseSearchKeywords(search: string): string[] {
   if (!search) return [];
   return search
-    .split(/[\s+]+/)
+    .split(/[\s\u3000]+/)
     .map((k) => k.trim())
     .filter(Boolean);
 }

@@ -1,5 +1,5 @@
 import { apiClient } from '@/services/api/client';
-import type { ApiEnvelope } from '@/types/api';
+import type { ApiEnvelope, PaginatedData } from '@/types/api';
 import type {
   CreateOrderPayload,
   DeleteOrderResponse,
@@ -9,8 +9,18 @@ import type {
   UpdateOrderStatusPayload,
 } from '@/types/orders';
 
-export function fetchOrders() {
-  return apiClient.get<ApiEnvelope<OrderRecord[]>>('/orders');
+type OrdersResponseData = OrderRecord[] | PaginatedData<OrderRecord>;
+
+function unwrapOrderList(data: OrdersResponseData) {
+  return Array.isArray(data) ? data : data.items;
+}
+
+export async function fetchOrders() {
+  const response = await apiClient.get<ApiEnvelope<OrdersResponseData>>('/orders?pageSize=100');
+  return {
+    ...response,
+    data: unwrapOrderList(response.data),
+  } satisfies ApiEnvelope<OrderRecord[]>;
 }
 
 export function fetchOrderDetail(id: string) {

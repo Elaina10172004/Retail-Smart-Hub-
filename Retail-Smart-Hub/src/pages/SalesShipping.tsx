@@ -15,6 +15,7 @@ import { DocumentWorkspaceShell } from '@/components/documents/DocumentWorkspace
 import { useAuth } from '@/auth/AuthContext';
 import { buildShippingDocument } from '@/lib/documents';
 import { downloadCsv } from '@/lib/export';
+import { matchesSearchQuery } from '@/lib/search';
 import { createShipmentDocument, fetchShipmentDetail, fetchShipments, fetchShippingWorkbench } from '@/services/api/shipping';
 import type { DocumentPreviewRecord } from '@/types/documents';
 import type { CreateShipmentDocumentPayload, ShipmentStockStatus, ShippingDetailRecord, ShippingRecord, ShippingWorkbenchCustomer, ShippingWorkbenchItem, ShippingWorkbenchOrder } from '@/types/shipping';
@@ -98,16 +99,18 @@ export function SalesShipping() {
     [workbenchCustomers, workbenchOrders.length],
   );
   const filteredWorkbenchOrders = useMemo(() => {
-    const keyword = orderSearch.trim().toLowerCase();
     return workbenchOrders.filter((order) => {
       const matchesCustomer = !customerFilter || order.customer === customerFilter;
-      const matchesSearch = !keyword || order.orderId.toLowerCase().includes(keyword) || order.customer.toLowerCase().includes(keyword) || order.items.some((item) => item.sku.toLowerCase().includes(keyword) || item.productName.toLowerCase().includes(keyword));
+      const matchesSearch = matchesSearchQuery(orderSearch, [
+        order.orderId,
+        order.customer,
+        ...order.items.flatMap((item) => [item.sku, item.productName]),
+      ]);
       return matchesCustomer && matchesSearch;
     });
   }, [customerFilter, orderSearch, workbenchOrders]);
   const filteredShipments = useMemo(() => shipments.filter((shipment) => {
-    const keyword = historySearch.trim().toLowerCase();
-    const matchesSearch = !keyword || shipment.id.toLowerCase().includes(keyword) || shipment.customer.toLowerCase().includes(keyword) || shipment.orderIds.some((orderId) => orderId.toLowerCase().includes(keyword));
+    const matchesSearch = matchesSearchQuery(historySearch, [shipment.id, shipment.customer, ...shipment.orderIds]);
     const matchesStatus = !statusFilter || shipment.status === statusFilter;
     return matchesSearch && matchesStatus;
   }), [historySearch, shipments, statusFilter]);

@@ -12,6 +12,7 @@ import { useAuth } from '@/auth/AuthContext';
 import { buildReceivableDocument, buildReceiptDocument } from '@/lib/documents';
 import { downloadCsv } from '@/lib/export';
 import { formatCurrency } from '@/lib/format';
+import { matchesSearchQuery } from '@/lib/search';
 import {
   fetchFinanceOverview,
   fetchPayableDetail,
@@ -114,12 +115,7 @@ export function FinancialManagement() {
   const filteredReceivables = useMemo(
     () =>
       receivables.filter((item) => {
-        const keyword = searchTerm.trim().toLowerCase();
-        const matchesSearch =
-          !keyword ||
-          item.id.toLowerCase().includes(keyword) ||
-          item.orderId.toLowerCase().includes(keyword) ||
-          item.customer.toLowerCase().includes(keyword);
+        const matchesSearch = matchesSearchQuery(searchTerm, [item.id, item.orderId, item.customer]);
         const matchesStatus = !statusFilter || item.status === statusFilter;
         return matchesSearch && matchesStatus;
       }),
@@ -129,12 +125,7 @@ export function FinancialManagement() {
   const filteredPayables = useMemo(
     () =>
       payables.filter((item) => {
-        const keyword = searchTerm.trim().toLowerCase();
-        const matchesSearch =
-          !keyword ||
-          item.id.toLowerCase().includes(keyword) ||
-          item.purchaseOrderId.toLowerCase().includes(keyword) ||
-          item.supplier.toLowerCase().includes(keyword);
+        const matchesSearch = matchesSearchQuery(searchTerm, [item.id, item.purchaseOrderId, item.supplier]);
         const matchesStatus = !statusFilter || item.status === statusFilter;
         return matchesSearch && matchesStatus;
       }),
