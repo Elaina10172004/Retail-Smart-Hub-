@@ -20,6 +20,7 @@ import { RowActionMenu } from '@/components/RowActionMenu';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { useAuth } from '@/auth/AuthContext';
 import { buildArrivalDocument, buildInboundDocument } from '@/lib/documents';
+import { clearApiGetCache } from '@/services/api/client';
 import { advanceArrival, createManualArrival, fetchArrivalDetail, fetchArrivalsPaginated, fetchManualArrivalCreateOptions, forceUpdateArrivalLines } from '@/services/api/arrival';
 import { createManualInbound, fetchManualInboundCreateOptions } from '@/services/api/inbound';
 import { confirmInbound, deleteInbound, fetchInboundDetail, fetchInboundsPaginated, forceUpdateInboundLines, saveInboundDraft, updateInboundStatus } from '@/services/api/inbound';
@@ -819,7 +820,7 @@ export function InboundManagement() {
           }}>
             创建入库单
           </Button>
-          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => void loadInboundHub(selectedInbound?.id)} disabled={isLoading}>
+          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => { clearApiGetCache(); void loadInboundHub(selectedInbound?.id); }} disabled={isLoading}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
             刷新列表
           </Button>

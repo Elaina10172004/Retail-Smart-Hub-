@@ -21,6 +21,7 @@ import { useAuth } from '@/auth/AuthContext';
 import { buildReceivableDocument, buildReceiptDocument } from '@/lib/documents';
 import { downloadCsv } from '@/lib/export';
 import { formatCurrency } from '@/lib/format';
+import { clearApiGetCache } from '@/services/api/client';
 import {
   fetchFinanceOverview,
   fetchPayableDetail,
@@ -459,7 +460,7 @@ export function FinancialManagement() {
           <Button
             variant="outline"
             className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm"
-            onClick={() => void loadFinance({ keepReceivableId: selectedReceivable?.id, keepPayableId: selectedPayable?.id })}
+            onClick={() => { clearApiGetCache(); void loadFinance({ keepReceivableId: selectedReceivable?.id, keepPayableId: selectedPayable?.id }); }}
             disabled={isLoading}
           >
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />

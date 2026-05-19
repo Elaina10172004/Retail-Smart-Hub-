@@ -17,6 +17,7 @@ import { useAuth } from '@/auth/AuthContext';
 import { buildShippingDocument } from '@/lib/documents';
 import { downloadCsv } from '@/lib/export';
 import { matchesSearchQuery } from '@/lib/search';
+import { clearApiGetCache } from '@/services/api/client';
 import { createShipmentDocument, fetchShipmentDetail, fetchShipmentsPaginated, fetchShippingWorkbench } from '@/services/api/shipping';
 import type { DocumentPreviewRecord } from '@/types/documents';
 import type { PaginatedData } from '@/types/api';
@@ -325,7 +326,7 @@ export function SalesShipping() {
       title="销售发货"
       actions={
         <>
-          <Button variant="outline" className="border-gray-300 text-gray-700 shadow-sm hover:bg-gray-50" onClick={() => void loadShippingHub()} disabled={isLoading}>
+          <Button variant="outline" className="border-gray-300 text-gray-700 shadow-sm hover:bg-gray-50" onClick={() => { clearApiGetCache(); void loadShippingHub(); }} disabled={isLoading}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />刷新数据
           </Button>
           <Button variant="outline" className="border-gray-300 text-gray-700 shadow-sm hover:bg-gray-50" onClick={handleExportCurrentList} disabled={filteredShipments.length === 0}>

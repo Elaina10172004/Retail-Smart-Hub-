@@ -10,6 +10,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { useAuth } from '@/auth/AuthContext';
 import { formatCurrency } from '@/lib/format';
 import { parseImportFile } from '@/lib/import';
+import { clearApiGetCache } from '@/services/api/client';
 import {
   createCustomer,
   deleteCustomer,
@@ -280,7 +281,7 @@ export function CustomerProfiles() {
         <Button
           variant="outline"
           className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm"
-          onClick={() => void loadCustomers()}
+          onClick={() => { clearApiGetCache(); void loadCustomers(); }}
           disabled={isLoading}
         >
           <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} /> 刷新客户

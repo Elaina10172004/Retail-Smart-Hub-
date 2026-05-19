@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Layout } from './components/Layout';
 import { PageErrorBoundary } from '@/components/PageErrorBoundary';
 import { AuthContext } from '@/auth/AuthContext';
-import { appModules, defaultModuleId, filterModulesByPermissions, findModuleById } from '@/config/modules';
+import { appModules, defaultModuleId, filterModulesByPermissions, type AppModuleId } from '@/config/modules';
 import { getCurrentPathname, getModulePath, LOGIN_PATH, resolveModuleFromPath } from '@/router/navigation';
 import { Login } from '@/pages/Login';
 import { clearAuthToken, getAuthToken, initializeAuthTokenStore, setAuthToken } from '@/services/api/client';
@@ -10,6 +10,18 @@ import { fetchSession, login, logout } from '@/services/api/system';
 import type { SessionPayload, SessionUser } from '@/types/auth';
 
 const REDIRECT_PATH_KEY = 'retail-smart-hub-redirect-path';
+const KEEP_ALIVE_MODULE_IDS = new Set<AppModuleId>([
+  'dashboard',
+  'orders',
+  'customers',
+  'inventory',
+  'procurement',
+  'inbound',
+  'shipping',
+  'finance',
+  'reports',
+  'settings',
+]);
 
 function persistPathname(pathname: string, replace = false) {
   if (typeof window === 'undefined') {
@@ -29,6 +41,7 @@ export default function App() {
   const [token, setToken] = useState('');
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [visitedModuleIds, setVisitedModuleIds] = useState<AppModuleId[]>([]);
 
   const isSuperAdmin = useMemo(
     () => Boolean(user && (user.username === 'admin' || user.roles.includes('系统管理员'))),
@@ -50,9 +63,12 @@ export default function App() {
 
     return visibleModules[0]?.id ?? defaultModuleId;
   }, [requestedModuleId, visibleModules]);
-  const ActivePage = useMemo(
-    () => findModuleById(resolvedActiveMenu)?.component || appModules[0].component,
-    [resolvedActiveMenu]
+  const renderedModules = useMemo(
+    () =>
+      visibleModules.filter((module) => {
+        return module.id === resolvedActiveMenu || (KEEP_ALIVE_MODULE_IDS.has(module.id) && visitedModuleIds.includes(module.id));
+      }),
+    [resolvedActiveMenu, visitedModuleIds, visibleModules],
   );
 
   const syncPathname = (nextPathname: string, replace = false) => {
@@ -162,6 +178,24 @@ export default function App() {
     }
   }, [isBootstrapping, pathname, resolvedActiveMenu, token, user]);
 
+  useEffect(() => {
+    if (!user || !token) {
+      setVisitedModuleIds([]);
+      return;
+    }
+
+    if (!KEEP_ALIVE_MODULE_IDS.has(resolvedActiveMenu)) {
+      return;
+    }
+
+    setVisitedModuleIds((current) => {
+      if (current.includes(resolvedActiveMenu)) {
+        return current;
+      }
+      return [...current, resolvedActiveMenu];
+    });
+  }, [resolvedActiveMenu, token, user]);
+
   const handleLogin = async (username: string, password: string) => {
     setIsLoggingIn(true);
     try {
@@ -208,9 +242,17 @@ export default function App() {
   return (
     <AuthContext.Provider value={authValue}>
       <Layout activeMenu={resolvedActiveMenu} setActiveMenu={(menu) => syncPathname(getModulePath(menu))}>
-        <PageErrorBoundary resetKey={resolvedActiveMenu}>
-          <ActivePage />
-        </PageErrorBoundary>
+        {renderedModules.map((module) => {
+          const ModulePage = module.component;
+          const isActive = module.id === resolvedActiveMenu;
+          return (
+            <div key={module.id} className={isActive ? 'block' : 'hidden'} aria-hidden={!isActive}>
+              <PageErrorBoundary resetKey={`${module.id}:${isActive ? 'active' : 'inactive'}`}>
+                <ModulePage />
+              </PageErrorBoundary>
+            </div>
+          );
+        })}
       </Layout>
     </AuthContext.Provider>
   );

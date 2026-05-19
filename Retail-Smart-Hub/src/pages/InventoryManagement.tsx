@@ -9,6 +9,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
 import { useAuth } from '@/auth/AuthContext';
+import { clearApiGetCache } from '@/services/api/client';
 import { adjustInventory, deleteInventory, fetchInventoryAlerts, fetchInventoryDetail, fetchInventoryListPaginated, fetchInventoryOverview, fetchInventoryShelves } from '@/services/api/inventory';
 import type { PaginatedData } from '@/types/api';
 import type { InventoryAlert, InventoryDetailRecord, InventoryItem, InventoryOverview, InventoryShelfOverviewRecord, InventoryStatus } from '@/types/inventory';
@@ -226,7 +227,7 @@ export function InventoryManagement() {
           <p className="mt-1 text-sm text-gray-500">库存明细现在会记录商品所在货架，并展示每个货架的容量和空位。</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => void loadInventory(selectedInventory?.id)} disabled={isLoading}>
+          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => { clearApiGetCache(); void loadInventory(selectedInventory?.id); }} disabled={isLoading}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} /> 刷新数据
           </Button>
           <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={handleExportReport} disabled={isLoading || filteredInventory.length === 0}>

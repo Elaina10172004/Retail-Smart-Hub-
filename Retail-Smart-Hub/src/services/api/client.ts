@@ -1,9 +1,22 @@
 const desktopApiBaseUrl = typeof window !== 'undefined' ? window.desktopShell?.apiBaseUrl : undefined;
 const viteApiBaseUrl = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL;
 export const API_BASE_URL = desktopApiBaseUrl || viteApiBaseUrl || '/api';
+const GET_CACHE_TTL_MS = 10_000;
 
 let authTokenCache: string | null = null;
 let tokenStoreInitialized = false;
+
+interface GetCacheEntry<T = unknown> {
+  expiresAt: number;
+  value?: T;
+  promise?: Promise<T>;
+}
+
+const getCache = new Map<string, GetCacheEntry>();
+
+export function clearApiGetCache() {
+  getCache.clear();
+}
 
 function hasDesktopTokenBridge() {
   return typeof window !== 'undefined' && Boolean(window.desktopShell?.auth);
@@ -36,6 +49,9 @@ export function getAuthToken() {
 
 export async function setAuthToken(token: string) {
   const normalizedToken = token.trim();
+  if (authTokenCache !== (normalizedToken || null)) {
+    clearApiGetCache();
+  }
   authTokenCache = normalizedToken || null;
   tokenStoreInitialized = true;
 
@@ -98,12 +114,7 @@ function pickApiErrorMessage(parsedBody: unknown, rawBody: string) {
   return rawBody.trim();
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!tokenStoreInitialized) {
-    await initializeAuthTokenStore();
-  }
-
-  const authToken = getAuthToken();
+async function executeRequest<T>(path: string, init: RequestInit | undefined, authToken: string | null, method: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
@@ -121,13 +132,75 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       void clearAuthToken();
       window.dispatchEvent(new Event('auth:expired'));
     }
-
-    const method = (init?.method || 'GET').toUpperCase();
     const reason = pickApiErrorMessage(parsedBody, rawBody) || response.statusText || 'Request failed';
     throw new Error(`${method} ${path} -> ${response.status} ${reason}`);
   }
 
   return (parsedBody as T) ?? ({} as T);
+}
+
+function shouldCacheGet(path: string, init?: RequestInit) {
+  const method = (init?.method || 'GET').toUpperCase();
+  if (method !== 'GET') {
+    return false;
+  }
+  if (init?.cache === 'no-store' || init?.cache === 'reload') {
+    return false;
+  }
+  if (path.startsWith('/system/session') || path.startsWith('/system/notifications') || path.startsWith('/health')) {
+    return false;
+  }
+  return true;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!tokenStoreInitialized) {
+    await initializeAuthTokenStore();
+  }
+
+  const authToken = getAuthToken();
+  const method = (init?.method || 'GET').toUpperCase();
+
+  if (shouldCacheGet(path, init)) {
+    const cacheKey = `${authToken || 'anonymous'} ${path}`;
+    const cached = getCache.get(cacheKey) as GetCacheEntry<T> | undefined;
+    const now = Date.now();
+
+    if (cached?.value !== undefined && cached.expiresAt > now) {
+      return cached.value;
+    }
+    if (cached?.promise) {
+      return cached.promise;
+    }
+
+    const promise = executeRequest<T>(path, init, authToken, method)
+      .then((value) => {
+        getCache.set(cacheKey, {
+          value,
+          expiresAt: Date.now() + GET_CACHE_TTL_MS,
+        });
+        return value;
+      })
+      .catch((error) => {
+        const current = getCache.get(cacheKey);
+        if (current?.promise === promise) {
+          getCache.delete(cacheKey);
+        }
+        throw error;
+      });
+
+    getCache.set(cacheKey, {
+      promise,
+      expiresAt: now + GET_CACHE_TTL_MS,
+    });
+    return promise;
+  }
+
+  const result = await executeRequest<T>(path, init, authToken, method);
+  if (method !== 'GET') {
+    clearApiGetCache();
+  }
+  return result;
 }
 
 export const apiClient = {

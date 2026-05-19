@@ -21,6 +21,7 @@ import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModa
 import { useAuth } from '@/auth/AuthContext';
 import { buildProcurementDocument } from '@/lib/documents';
 import { formatCurrency } from '@/lib/format';
+import { clearApiGetCache } from '@/services/api/client';
 import { Bot, Eye, Filter, LoaderCircle, PackagePlus, Plus, RefreshCw, Search, Sparkles, Trash2, X } from 'lucide-react';
 import {
   createProcurementOrder,
@@ -859,7 +860,7 @@ export function ProcurementManagement() {
           <p className="mt-1 text-sm text-gray-500">支持低库存自动补货、采购内新增商品，以及统一的真实单据预览。</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => void loadProcurement()} disabled={isLoading}>
+          <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50 shadow-sm" onClick={() => { clearApiGetCache(); void loadProcurement(); }} disabled={isLoading}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
             刷新列表
           </Button>

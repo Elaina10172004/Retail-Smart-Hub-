@@ -13,6 +13,7 @@ import { DocumentWorkspaceShell } from '@/components/documents/DocumentWorkspace
 import { useAuth } from '@/auth/AuthContext';
 import { buildOrderDocument } from '@/lib/documents';
 import { formatCurrency } from '@/lib/format';
+import { clearApiGetCache } from '@/services/api/client';
 import { Pagination } from '@/components/ui/pagination';
 import {
   EMPTY_RANGE_FILTER,
@@ -314,6 +315,7 @@ export function OrderManagement() {
   };
 
   const handleReloadOrders = async () => {
+    clearApiGetCache();
     setActionMessage('');
     await loadPageData();
   };
