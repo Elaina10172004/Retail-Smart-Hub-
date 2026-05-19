@@ -35,7 +35,18 @@ ordersRouter.get('/summary', requirePermission('orders.view'), (_req, res) => {
 });
 
 ordersRouter.get('/', requirePermission('orders.view'), (req, res) => {
-  return ok(res, paginateList(req, () => listOrders(), { searchFields: ['id', 'customer', 'date', 'productSummary'] }));
+  return ok(res, paginateList(req, () => listOrders(), {
+    searchFields: ['id', 'customer', 'date', 'productSummary'],
+    filters: [
+      { queryKey: 'customer', field: 'customer' },
+      { queryKey: 'status', field: 'status' },
+      { queryKey: 'stockStatus', field: 'stockStatus' },
+    ],
+    rangeFilters: [
+      { minKey: 'dateFrom', maxKey: 'dateTo', field: 'date', type: 'date' },
+      { minKey: 'amountMin', maxKey: 'amountMax', field: 'amount', type: 'number' },
+    ],
+  }));
 });
 
 ordersRouter.get('/form-options', requirePermission('orders.create'), (_req, res) => {

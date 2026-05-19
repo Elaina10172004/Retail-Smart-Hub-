@@ -6,7 +6,7 @@ import { getTableCount, ensureColumnExists as ensureColumnExistsInSchema } from 
 import { seedBootstrapData } from './seeds/core.seed';
 import { env } from '../config/env';
 import { addDays, compactDate, currentDateString } from '../shared/format';
-import { generateTemporaryPassword, hashPassword } from '../shared/password';
+import { hashPassword } from '../shared/password';
 
 interface RunResult {
   changes: number;
@@ -84,6 +84,98 @@ export const databaseDir = configuredDataDir ? path.resolve(configuredDataDir) :
 export const databasePath = path.join(databaseDir, 'retail-smart-hub.db');
 const DEFAULT_ADMIN_USERNAME = 'admin';
 const DEFAULT_ADMIN_PASSWORD = 'admin';
+const DEFAULT_DEMO_PASSWORD = 'Demo@123';
+
+interface SeededRoleDefinition {
+  id: string;
+  name: string;
+  description: string;
+  scope: string;
+}
+
+interface SeededDemoAccountDefinition {
+  userId: string;
+  username: string;
+  email: string;
+  phone: string;
+  department: string;
+  status: 'active' | 'inactive';
+  roleId: string;
+  password: string;
+}
+
+const SEEDED_ROLE_DEFINITIONS: SeededRoleDefinition[] = [
+  { id: 'ROLE-001', name: '系统管理员', description: '负责全模块配置、审批和系统维护。', scope: 'global' },
+  { id: 'ROLE-002', name: '财务专员', description: '负责应收、应付、收付款和对账。', scope: 'finance' },
+  { id: 'ROLE-003', name: '仓储主管', description: '负责库存、入库、发货与预警处理。', scope: 'warehouse' },
+  { id: 'ROLE-004', name: '采购专员', description: '负责采购、到货和供应商协同。', scope: 'procurement' },
+  { id: 'ROLE-005', name: '运营经理', description: '负责订单、履约进度和经营报表。', scope: 'operations' },
+  { id: 'ROLE-006', name: '客服与销售内勤', description: '负责客户、订单跟进和基础资料协同。', scope: 'sales' },
+];
+
+const SEEDED_ADMIN_ACCOUNT: SeededDemoAccountDefinition = {
+  userId: 'USR-001',
+  username: DEFAULT_ADMIN_USERNAME,
+  email: 'admin@retail-smart-hub.com',
+  phone: '13800138000',
+  department: '管理部',
+  status: 'active',
+  roleId: 'ROLE-001',
+  password: DEFAULT_ADMIN_PASSWORD,
+};
+
+const SEEDED_DEMO_ACCOUNTS: SeededDemoAccountDefinition[] = [
+  {
+    userId: 'USR-002',
+    username: 'finance.li',
+    email: 'finance@retail-smart-hub.com',
+    phone: '13800138001',
+    department: '财务部',
+    status: 'active',
+    roleId: 'ROLE-002',
+    password: DEFAULT_DEMO_PASSWORD,
+  },
+  {
+    userId: 'USR-003',
+    username: 'warehouse.zhang',
+    email: 'warehouse@retail-smart-hub.com',
+    phone: '13800138002',
+    department: '仓储部',
+    status: 'active',
+    roleId: 'ROLE-003',
+    password: DEFAULT_DEMO_PASSWORD,
+  },
+  {
+    userId: 'USR-004',
+    username: 'buyer.wang',
+    email: 'buyer@retail-smart-hub.com',
+    phone: '13800138003',
+    department: '采购部',
+    status: 'active',
+    roleId: 'ROLE-004',
+    password: DEFAULT_DEMO_PASSWORD,
+  },
+  {
+    userId: 'USR-005',
+    username: 'ops.chen',
+    email: 'ops@retail-smart-hub.com',
+    phone: '13800138004',
+    department: '运营部',
+    status: 'active',
+    roleId: 'ROLE-005',
+    password: DEFAULT_DEMO_PASSWORD,
+  },
+  {
+    userId: 'USR-006',
+    username: 'service.liu',
+    email: 'service@retail-smart-hub.com',
+    phone: '13800138005',
+    department: '客服部',
+    status: 'active',
+    roleId: 'ROLE-006',
+    password: DEFAULT_DEMO_PASSWORD,
+  },
+];
 
 fs.mkdirSync(databaseDir, { recursive: true });
 
@@ -131,6 +223,86 @@ function clearAllSecurityLocks() {
           last_failed_at = NULL,
           locked_until = NULL
   `).run();
+}
+
+function syncSeededRolesAndPermissions() {
+  const upsertRole = db.prepare(`
+    INSERT INTO roles (id, name, description, scope)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      description = excluded.description,
+      scope = excluded.scope
+  `);
+  const deleteRolePermissions = db.prepare('DELETE FROM role_permissions WHERE role_id = ?');
+  const insertRolePermission = db.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)');
+
+  SEEDED_ROLE_DEFINITIONS.forEach((role) => {
+    upsertRole.run(role.id, role.name, role.description, role.scope);
+  });
+
+  ensureCorePermissionCatalog();
+
+  const permissionRows = db.prepare<{ id: string; code: string }>('SELECT id, code FROM permissions').all();
+  const permissionIdByCode = new Map(permissionRows.map((item) => [item.code, item.id]));
+
+  Object.entries(ROLE_PERMISSION_DEFAULTS).forEach(([roleId, permissionCodes]) => {
+    deleteRolePermissions.run(roleId);
+    permissionCodes.forEach((permissionCode) => {
+      const permissionId = permissionIdByCode.get(permissionCode);
+      if (!permissionId) {
+        return;
+      }
+      insertRolePermission.run(roleId, permissionId);
+    });
+  });
+}
+
+function syncSeededUsersAndCredentials() {
+  const demoAccounts = env.nodeEnv !== 'production' ? SEEDED_DEMO_ACCOUNTS : [];
+  const accounts = [SEEDED_ADMIN_ACCOUNT, ...demoAccounts];
+  const passwordUpdatedAt = `${currentDateString()}T00:00:00.000Z`;
+
+  const upsertUser = db.prepare(`
+    INSERT INTO users (id, username, email, phone, department, status)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      username = excluded.username,
+      email = excluded.email,
+      phone = excluded.phone,
+      department = excluded.department,
+      status = excluded.status
+  `);
+  const deleteUserRoles = db.prepare('DELETE FROM user_roles WHERE user_id = ?');
+  const insertUserRole = db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)');
+  const upsertCredential = db.prepare(`
+    INSERT INTO user_credentials (
+      user_id, password, password_updated_at, must_change_password, temporary_password_issued_at
+    ) VALUES (?, ?, ?, 0, NULL)
+    ON CONFLICT(user_id) DO UPDATE SET
+      password = excluded.password,
+      password_updated_at = excluded.password_updated_at,
+      must_change_password = 0,
+      temporary_password_issued_at = NULL
+  `);
+  const upsertSecurityState = db.prepare(`
+    INSERT INTO auth_security_state (
+      user_id, failed_attempt_count, last_failed_at, locked_until, password_updated_at
+    ) VALUES (?, 0, NULL, NULL, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      failed_attempt_count = 0,
+      last_failed_at = NULL,
+      locked_until = NULL,
+      password_updated_at = excluded.password_updated_at
+  `);
+
+  accounts.forEach((account) => {
+    upsertUser.run(account.userId, account.username, account.email, account.phone, account.department, account.status);
+    deleteUserRoles.run(account.userId);
+    insertUserRole.run(account.userId, account.roleId);
+    upsertCredential.run(account.userId, hashPassword(account.password), passwordUpdatedAt);
+    upsertSecurityState.run(account.userId, passwordUpdatedAt);
+  });
 }
 
 // 首次启动时会把管理员临时密码写入本地文件，方便首次登录后立刻改密。
@@ -1747,7 +1919,8 @@ const ROLE_PERMISSION_DEFAULTS: Record<string, string[]> = {
   'ROLE-002': ['finance.view', 'finance.receivable', 'finance.payable', 'reports.view'],
   'ROLE-003': ['inventory.view', 'inventory.write', 'shipping.dispatch'],
   'ROLE-004': ['procurement.manage', 'settings.master-data'],
-  'ROLE-005': ['orders.view', 'orders.create', 'reports.view', 'finance.view'],
+  'ROLE-005': ['orders.view', 'orders.create', 'inventory.view', 'procurement.manage', 'shipping.dispatch', 'reports.view'],
+  'ROLE-006': ['orders.view', 'orders.create', 'settings.master-data', 'reports.view'],
 };
 
 const LEGACY_PERMISSION_ALIAS_MAP: Array<[string, string]> = [
@@ -1840,108 +2013,16 @@ export function ensureAccessControlData() {
     userRoleCount > 0 &&
     credentialCount > 0
   ) {
-    ensureCorePermissionCatalog();
+    syncSeededRolesAndPermissions();
+    syncSeededUsersAndCredentials();
+    clearAllSecurityLocks();
+    repairDefaultAdminCredentials();
     return;
   }
 
   const transaction = db.transaction(() => {
-    const insertRole = db.prepare('INSERT OR IGNORE INTO roles (id, name, description, scope) VALUES (?, ?, ?, ?)');
-    const insertPermission = db.prepare(
-      'INSERT OR IGNORE INTO permissions (id, code, label, module_id) VALUES (?, ?, ?, ?)'
-    );
-    const insertRolePermission = db.prepare(
-      'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)'
-    );
-    const insertUser = db.prepare(
-      'INSERT OR IGNORE INTO users (id, username, email, phone, department, status) VALUES (?, ?, ?, ?, ?, ?)'
-    );
-    const insertUserRole = db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)');
-    const insertCredential = db.prepare(
-      'INSERT OR IGNORE INTO user_credentials (user_id, password, password_updated_at, must_change_password, temporary_password_issued_at) VALUES (?, ?, ?, ?, ?)'
-    );
-
-    [
-      ['ROLE-001', '系统管理员', '负责全模块配置、审批和系统维护。', 'global'],
-      ['ROLE-002', '财务专员', '负责应收、应付、收付款和对账。', 'finance'],
-      ['ROLE-003', '仓储主管', '负责库存、入库、发货与预警处理。', 'warehouse'],
-      ['ROLE-004', '采购专员', '负责采购、到货和供应商协同。', 'procurement'],
-      ['ROLE-005', '运营经理', '负责订单、履约进度和经营报表。', 'operations'],
-    ].forEach((row) => insertRole.run(...row));
-
-    CORE_PERMISSION_DEFINITIONS.forEach((row) => insertPermission.run(row.id, row.code, row.label, row.moduleId));
-
-    const permissionRows = db.prepare<{ id: string; code: string }>('SELECT id, code FROM permissions').all();
-    const permissionIdByCode = new Map(permissionRows.map((item) => [item.code, item.id]));
-    Object.entries(ROLE_PERMISSION_DEFAULTS).forEach(([roleId, permissionCodes]) => {
-      permissionCodes.forEach((permissionCode) => {
-        const permissionId = permissionIdByCode.get(permissionCode);
-        if (!permissionId) {
-          return;
-        }
-        insertRolePermission.run(roleId, permissionId);
-      });
-    });
-
-    const seedDemoUsers = env.nodeEnv !== 'production';
-    const seededUsers: Array<[string, string, string, string, string, string]> = [
-      ['USR-001', 'admin', 'admin@retail-smart-hub.com', '13800138000', '管理部', 'active'],
-    ];
-    const seededUserRoles: Array<[string, string]> = [['USR-001', 'ROLE-001']];
-
-    // Demo identities are useful for local development/testing, but should not be part of production defaults.
-    if (seedDemoUsers) {
-      seededUsers.push(
-        ['USR-002', 'finance.li', 'finance@retail-smart-hub.com', '13800138001', '财务部', 'active'],
-        ['USR-003', 'warehouse.zhang', 'warehouse@retail-smart-hub.com', '13800138002', '仓储部', 'active'],
-        ['USR-004', 'buyer.wang', 'buyer@retail-smart-hub.com', '13800138003', '采购部', 'active'],
-        ['USR-005', 'ops.chen', 'ops@retail-smart-hub.com', '13800138004', '运营部', 'inactive'],
-      );
-      seededUserRoles.push(['USR-002', 'ROLE-002'], ['USR-003', 'ROLE-003'], ['USR-004', 'ROLE-004'], ['USR-005', 'ROLE-005']);
-    }
-
-    seededUsers.forEach((row) => insertUser.run(...row));
-    seededUserRoles.forEach((row) => insertUserRole.run(...row));
-
-    const seededPasswordUpdatedAt = `${currentDateString()}T00:00:00.000Z`;
-    const seededCredentialUsers: Array<{ userId: string; username: string; password: string; mustChangePassword: boolean }> = [
-      {
-        userId: 'USR-001',
-        username: 'admin',
-        password: DEFAULT_ADMIN_PASSWORD,
-        mustChangePassword: false,
-      },
-    ];
-
-    if (seedDemoUsers) {
-      seededCredentialUsers.push(
-        { userId: 'USR-002', username: 'finance.li', password: generateTemporaryPassword(18), mustChangePassword: true },
-        { userId: 'USR-003', username: 'warehouse.zhang', password: generateTemporaryPassword(18), mustChangePassword: true },
-        { userId: 'USR-004', username: 'buyer.wang', password: generateTemporaryPassword(18), mustChangePassword: true },
-        { userId: 'USR-005', username: 'ops.chen', password: generateTemporaryPassword(18), mustChangePassword: true },
-      );
-    }
-    const seededPlaintextPasswords: Array<{ username: string; temporaryPassword: string }> = [];
-
-    seededCredentialUsers.forEach(({ userId, username, password, mustChangePassword }) => {
-      insertCredential.run(
-        userId,
-        hashPassword(password),
-        seededPasswordUpdatedAt,
-        mustChangePassword ? 1 : 0,
-        mustChangePassword ? seededPasswordUpdatedAt : null,
-      );
-      if (mustChangePassword) {
-        seededPlaintextPasswords.push({ username, temporaryPassword: password });
-      }
-    });
-
-    if (env.authDebugLogSeedPasswords && seededPlaintextPasswords.length > 0) {
-      console.warn('[auth-bootstrap] seeded users have one-time temporary passwords:');
-      seededPlaintextPasswords.forEach((item) => {
-        console.warn(`[auth-bootstrap] ${item.username}: ${item.temporaryPassword}`);
-      });
-    }
-
+    syncSeededRolesAndPermissions();
+    syncSeededUsersAndCredentials();
     clearAllSecurityLocks();
     repairDefaultAdminCredentials();
   });

@@ -66,6 +66,11 @@ export interface SaveInboundDraftItemPayload {
   shelfId: string;
 }
 
+export interface ForceUpdateInboundLinesPayload {
+  reason?: string;
+  items: SaveInboundDraftItemPayload[];
+}
+
 export interface ManualInboundCandidateItem {
   supplierId: string;
   purchaseOrderId: string;
@@ -722,6 +727,79 @@ export function confirmInbound(inboundId: string, payloadItems?: SaveInboundDraf
 
   transaction();
   return loadInbound(inboundId) as InboundRecord;
+}
+
+export function forceUpdateInboundLines(inboundId: string, payload: ForceUpdateInboundLinesPayload) {
+  const inbound = loadInbound(inboundId);
+  if (!inbound) {
+    throw new Error('Inbound order not found');
+  }
+  if (!Array.isArray(payload.items) || payload.items.length === 0) {
+    throw new Error('items are required');
+  }
+
+  const normalizedItems = normalizeInboundDraftItems(inbound, payload.items);
+  const totalQualifiedQty = normalizedItems.reduce((sum, item) => sum + item.qualifiedQty, 0);
+  const totalDefectQty = normalizedItems.reduce((sum, item) => sum + item.defectQty, 0);
+  const totalInboundQty = normalizedItems.reduce((sum, item) => sum + item.inboundQty, 0);
+  if (inbound.status === STATUS_INBOUND_DONE && totalInboundQty <= 0) {
+    throw new Error('Confirmed inbound order must keep a positive inbound quantity');
+  }
+
+  const now = new Date().toISOString();
+  const today = currentDateString();
+  const reason = String(payload.reason || '').trim() || '管理员强制修正入库明细';
+  const updateItem = db.prepare(
+    'UPDATE receiving_note_items SET qualified_qty = ?, defect_qty = ?, inbound_qty = ?, shelf_id = ? WHERE id = ?',
+  );
+  const updatePurchaseItem = db.prepare(
+    'UPDATE purchase_order_items SET arrived_qty = ? WHERE id = (SELECT purchase_order_item_id FROM receiving_note_items WHERE id = ?)',
+  );
+
+  const transaction = db.transaction(() => {
+    if (inbound.status === STATUS_INBOUND_DONE) {
+      applyInboundInventoryDelta(inbound.receivingNoteId, inbound.warehouseId, inboundId, 'out', now, 'force_inbound_line_reverse');
+    }
+
+    normalizedItems.forEach((item) => {
+      updateItem.run(item.qualifiedQty, item.defectQty, item.inboundQty, item.shelfId, item.id);
+      updatePurchaseItem.run(item.qualifiedQty, item.id);
+    });
+
+    db.prepare(
+      'UPDATE receiving_notes SET qualified_qty = ?, defect_qty = ?, status = ? WHERE id = ?',
+    ).run(
+      totalQualifiedQty,
+      totalDefectQty,
+      inbound.status === STATUS_INBOUND_DONE ? STATUS_RECEIVING_DONE : STATUS_RECEIVING_PENDING_INBOUND,
+      inbound.receivingNoteId,
+    );
+    db.prepare('UPDATE inbound_orders SET inbound_qty = ?, status = ?, completed_at = ? WHERE id = ?').run(
+      totalInboundQty,
+      inbound.status === STATUS_INBOUND_DONE ? STATUS_INBOUND_DONE : STATUS_PENDING_INBOUND,
+      inbound.status === STATUS_INBOUND_DONE ? today : null,
+      inboundId,
+    );
+
+    if (inbound.status === STATUS_INBOUND_DONE) {
+      applyInboundInventoryDelta(inbound.receivingNoteId, inbound.warehouseId, inboundId, 'in', now, 'force_inbound_line_apply');
+    }
+
+    loadSourcePurchaseOrderIdsForReceivingNote(inbound.receivingNoteId).forEach((purchaseOrderId) => {
+      recalculatePurchaseOrderStatus(purchaseOrderId);
+    });
+
+    appendAuditLog('force_update_inbound_lines', 'inbound_order', inboundId, {
+      reason,
+      previousStatus: inbound.status,
+      itemCount: normalizedItems.length,
+      totalQualifiedQty,
+      totalInboundQty,
+    });
+  });
+
+  transaction();
+  return getInboundDetail(inboundId) as InboundDetailRecord;
 }
 
 export function forceUpdateInboundStatus(inboundId: string, nextStatus: string) {

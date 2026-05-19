@@ -58,6 +58,10 @@ export interface SaveInboundDraftPayload {
   items: SaveInboundDraftItemPayload[];
 }
 
+export interface ForceUpdateInboundLinesPayload extends SaveInboundDraftPayload {
+  reason?: string;
+}
+
 export interface DeleteInboundResponse {
   id: string;
   deleted: boolean;

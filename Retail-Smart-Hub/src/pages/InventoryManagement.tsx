@@ -5,13 +5,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Pagination } from '@/components/ui/pagination';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
 import { useAuth } from '@/auth/AuthContext';
-import { adjustInventory, deleteInventory, fetchInventoryAlerts, fetchInventoryDetail, fetchInventoryList, fetchInventoryOverview, fetchInventoryShelves } from '@/services/api/inventory';
+import { adjustInventory, deleteInventory, fetchInventoryAlerts, fetchInventoryDetail, fetchInventoryListPaginated, fetchInventoryOverview, fetchInventoryShelves } from '@/services/api/inventory';
+import type { PaginatedData } from '@/types/api';
 import type { InventoryAlert, InventoryDetailRecord, InventoryItem, InventoryOverview, InventoryShelfOverviewRecord, InventoryStatus } from '@/types/inventory';
 import { downloadCsv } from '@/lib/export';
-import { matchesSearchQuery } from '@/lib/search';
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试。';
@@ -48,11 +49,13 @@ function capacityBarClass(usageRate: number) {
   return 'bg-emerald-500';
 }
 
+const PAGE_SIZE = 20;
+
 export function InventoryManagement() {
   const { user } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
   const isSuperAdmin = Boolean(user && (user.username === 'admin' || user.roles.includes('系统管理员')));
-  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [inventoryData, setInventoryData] = useState<PaginatedData<InventoryItem> | null>(null);
   const [alerts, setAlerts] = useState<InventoryAlert[]>([]);
   const [shelves, setShelves] = useState<InventoryShelfOverviewRecord[]>([]);
   const [overview, setOverview] = useState<InventoryOverview | null>(null);
@@ -60,35 +63,36 @@ export function InventoryManagement() {
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [isAdjusting, setIsAdjusting] = useState(false);
   const [editingStock, setEditingStock] = useState<{ sku: string; name: string; targetStock: string } | null>(null);
   const [pageError, setPageError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
+  const inventory = inventoryData?.items ?? [];
 
   const categories = useMemo(() => Array.from(new Set(inventory.map((item) => item.category))), [inventory]);
 
-  const filteredInventory = useMemo(() => {
-    return inventory.filter((item) => {
-      const matchesSearch = matchesSearchQuery(searchTerm, [item.id, item.name, item.shelfSummary]);
-      const matchesCategory = !categoryFilter || item.category === categoryFilter;
-      const matchesStatus = !statusFilter || item.status === statusFilter;
-      return matchesSearch && matchesCategory && matchesStatus;
-    });
-  }, [categoryFilter, inventory, searchTerm, statusFilter]);
+  const filteredInventory = inventory;
 
   const loadInventory = async (keepSelectedSku?: string) => {
     setIsLoading(true);
     setPageError('');
     try {
       const [inventoryResponse, alertsResponse, overviewResponse, shelvesResponse] = await Promise.all([
-        fetchInventoryList(),
+        fetchInventoryListPaginated({
+          page: currentPage,
+          pageSize: PAGE_SIZE,
+          search: searchTerm,
+          category: categoryFilter,
+          status: statusFilter,
+        }),
         fetchInventoryAlerts(),
         fetchInventoryOverview(),
         fetchInventoryShelves(),
       ]);
-      setInventory(inventoryResponse.data);
+      setInventoryData(inventoryResponse.data);
       setAlerts(alertsResponse.data);
       setOverview(overviewResponse.data);
       setShelves(shelvesResponse.data);
@@ -104,8 +108,12 @@ export function InventoryManagement() {
   };
 
   useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, categoryFilter, statusFilter]);
+
+  useEffect(() => {
     void loadInventory();
-  }, []);
+  }, [currentPage, searchTerm, categoryFilter, statusFilter]);
 
   const handleViewDetail = async (sku: string) => {
     setIsDetailLoading(true);
@@ -396,6 +404,17 @@ export function InventoryManagement() {
                 ))}
               </TableBody>
             </Table>
+            {inventoryData ? (
+              <div className="border-t border-gray-100 px-4">
+                <Pagination
+                  page={inventoryData.page}
+                  totalPages={inventoryData.totalPages}
+                  total={inventoryData.total}
+                  pageSize={inventoryData.pageSize}
+                  onPageChange={setCurrentPage}
+                />
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

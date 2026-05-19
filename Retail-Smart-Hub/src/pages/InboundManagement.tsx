@@ -5,18 +5,27 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Pagination } from '@/components/ui/pagination';
+import {
+  EMPTY_RANGE_FILTER,
+  MultiSelectColumnFilter,
+  RangeColumnFilter,
+  buildColumnFilterOptions,
+  isRangeFilterActive,
+  type RangeFilterValue,
+} from '@/components/ui/table-column-filter';
 import { GroupedDocumentTable } from '@/components/ui/grouped-document-table';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { useAuth } from '@/auth/AuthContext';
 import { buildArrivalDocument, buildInboundDocument } from '@/lib/documents';
-import { matchesSearchQuery } from '@/lib/search';
-import { advanceArrival, createManualArrival, fetchArrivalDetail, fetchArrivals, fetchManualArrivalCreateOptions } from '@/services/api/arrival';
+import { advanceArrival, createManualArrival, fetchArrivalDetail, fetchArrivalsPaginated, fetchManualArrivalCreateOptions, forceUpdateArrivalLines } from '@/services/api/arrival';
 import { createManualInbound, fetchManualInboundCreateOptions } from '@/services/api/inbound';
-import { confirmInbound, deleteInbound, fetchInboundDetail, fetchInbounds, saveInboundDraft, updateInboundStatus } from '@/services/api/inbound';
+import { confirmInbound, deleteInbound, fetchInboundDetail, fetchInboundsPaginated, forceUpdateInboundLines, saveInboundDraft, updateInboundStatus } from '@/services/api/inbound';
+import type { PaginatedData } from '@/types/api';
 import type { DocumentPreviewRecord } from '@/types/documents';
-import type { ArrivalRecord, CreateManualArrivalItemPayload, ManualArrivalCandidateItem } from '@/types/arrival';
+import type { ArrivalDetailRecord, ArrivalRecord, CreateManualArrivalItemPayload, ManualArrivalCandidateItem } from '@/types/arrival';
 import type { CreateManualInboundItemPayload, InboundDetailRecord, InboundDetailItem, InboundRecord, ManualInboundCandidateItem, SaveInboundDraftPayload, UpdateInboundStatusPayload } from '@/types/inbound';
 
 function getErrorMessage(error: unknown) {
@@ -25,12 +34,24 @@ function getErrorMessage(error: unknown) {
 
 const INBOUND_FORCE_STATUS_OPTIONS = ['待入库', '已入库'] as const;
 type InboundForceStatus = (typeof INBOUND_FORCE_STATUS_OPTIONS)[number];
+const ARRIVAL_FILTER_STATUS_OPTIONS = ['待验收', '部分到货'] as const;
+const PAGE_SIZE = 20;
 
 interface InboundDraftItemState {
   itemId: string;
   qualifiedQty: string;
   inboundQty: string;
   shelfId: string;
+}
+
+interface ArrivalForceLineDraftItem {
+  itemId: string;
+  sku: string;
+  productName: string;
+  expectedQty: string;
+  arrivedQty: string;
+  qualifiedQty: string;
+  defectQty: string;
 }
 
 interface CreateGroup<TItem> {
@@ -67,8 +88,9 @@ export function InboundManagement() {
   const { confirm, confirmDialog } = useConfirmDialog();
   const isSuperAdmin = Boolean(user && (user.username === 'admin' || user.roles.includes('系统管理员')));
   const canConfirmInbound = hasPermission('procurement.manage');
-  const [arrivals, setArrivals] = useState<ArrivalRecord[]>([]);
-  const [inbounds, setInbounds] = useState<InboundRecord[]>([]);
+  const [waitingArrivalsData, setWaitingArrivalsData] = useState<PaginatedData<ArrivalRecord> | null>(null);
+  const [waitingInboundsData, setWaitingInboundsData] = useState<PaginatedData<InboundRecord> | null>(null);
+  const [completedInboundsData, setCompletedInboundsData] = useState<PaginatedData<InboundRecord> | null>(null);
   const [arrivalCreateOptions, setArrivalCreateOptions] = useState<ManualArrivalCandidateItem[]>([]);
   const [inboundCreateOptions, setInboundCreateOptions] = useState<ManualInboundCandidateItem[]>([]);
   const [selectedInbound, setSelectedInbound] = useState<InboundDetailRecord | null>(null);
@@ -91,7 +113,15 @@ export function InboundManagement() {
   const [isCreatingArrival, setIsCreatingArrival] = useState(false);
   const [isCreatingInbound, setIsCreatingInbound] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  const [supplierFilter, setSupplierFilter] = useState<string[]>([]);
+  const [arrivalStatusFilter, setArrivalStatusFilter] = useState<string[]>([]);
+  const [inboundStatusFilter, setInboundStatusFilter] = useState<string[]>([]);
+  const [warehouseFilter, setWarehouseFilter] = useState<string[]>([]);
+  const [arrivalQtyFilter, setArrivalQtyFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
+  const [inboundQtyFilter, setInboundQtyFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
+  const [arrivalPage, setArrivalPage] = useState(1);
+  const [waitingInboundPage, setWaitingInboundPage] = useState(1);
+  const [completedInboundPage, setCompletedInboundPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
@@ -105,50 +135,83 @@ export function InboundManagement() {
     currentStatus: InboundForceStatus;
     nextStatus: InboundForceStatus;
   } | null>(null);
+  const [forceArrivalDraft, setForceArrivalDraft] = useState<{
+    arrivalId: string;
+    poId: string;
+    supplier: string;
+    reason: string;
+    items: ArrivalForceLineDraftItem[];
+  } | null>(null);
 
-  const filteredInbounds = useMemo(
-    () =>
-      inbounds.filter((item) => {
-        const matchesSearch = matchesSearchQuery(searchTerm, [item.id, item.rcvId, item.supplier, item.warehouse]);
-        const matchesStatus = !statusFilter || item.status === statusFilter;
-        return matchesSearch && matchesStatus;
-      }),
-    [inbounds, searchTerm, statusFilter],
+  const showWaitingInbounds = inboundStatusFilter.length === 0 || inboundStatusFilter.includes('待入库');
+  const showCompletedInbounds = inboundStatusFilter.length === 0 || inboundStatusFilter.includes('已入库');
+  const waitingArrivalRecords = waitingArrivalsData?.items ?? [];
+  const waitingInboundRecords = showWaitingInbounds ? waitingInboundsData?.items ?? [] : [];
+  const completedInboundRecords = showCompletedInbounds ? completedInboundsData?.items ?? [] : [];
+  const supplierFilterOptions = useMemo(
+    () => buildColumnFilterOptions([
+      ...supplierFilter,
+      ...waitingArrivalRecords.map((item) => item.supplier),
+      ...waitingInboundRecords.map((item) => item.supplier),
+      ...completedInboundRecords.map((item) => item.supplier),
+      ...arrivalCreateOptions.map((item) => item.supplier),
+      ...inboundCreateOptions.map((item) => item.supplier),
+    ]),
+    [arrivalCreateOptions, completedInboundRecords, inboundCreateOptions, supplierFilter, waitingArrivalRecords, waitingInboundRecords],
   );
-
-  const filteredArrivals = useMemo(
-    () =>
-      arrivals.filter((item) => {
-        return matchesSearchQuery(searchTerm, [item.id, item.poId, item.supplier]);
-      }),
-    [arrivals, searchTerm],
+  const arrivalStatusFilterOptions = useMemo(
+    () => ARRIVAL_FILTER_STATUS_OPTIONS.map((status) => ({ value: status, label: status })),
+    [],
   );
-
-  const waitingArrivalRecords = useMemo(
-    () => filteredArrivals.filter((item) => item.status === '待验收' || item.status === '部分到货'),
-    [filteredArrivals],
+  const inboundStatusFilterOptions = useMemo(
+    () => INBOUND_FORCE_STATUS_OPTIONS.map((status) => ({ value: status, label: status })),
+    [],
   );
-  const waitingInboundRecords = useMemo(
-    () => filteredInbounds.filter((item) => item.status === '待入库'),
-    [filteredInbounds],
+  const warehouseFilterOptions = useMemo(
+    () => buildColumnFilterOptions([
+      ...warehouseFilter,
+      ...waitingInboundRecords.map((item) => item.warehouse),
+      ...completedInboundRecords.map((item) => item.warehouse),
+    ]),
+    [completedInboundRecords, waitingInboundRecords, warehouseFilter],
   );
-  const completedInboundRecords = useMemo(
-    () => filteredInbounds.filter((item) => item.status === '已入库'),
-    [filteredInbounds],
-  );
+  const hasInboundColumnFilters =
+    supplierFilter.length > 0 ||
+    arrivalStatusFilter.length > 0 ||
+    inboundStatusFilter.length > 0 ||
+    warehouseFilter.length > 0 ||
+    isRangeFilterActive(arrivalQtyFilter) ||
+    isRangeFilterActive(inboundQtyFilter);
 
   const loadInboundHub = async (keepSelectedId?: string) => {
     setIsLoading(true);
     setPageError('');
     try {
-      const [inboundResponse, arrivalResponse, arrivalCreateResponse, inboundCreateResponse] = await Promise.all([
-        fetchInbounds(),
-        fetchArrivals(),
+      const inboundQuery = {
+        search: searchTerm,
+        supplier: supplierFilter.join(',') || undefined,
+        warehouse: warehouseFilter.join(',') || undefined,
+        itemQtyMin: inboundQtyFilter.min,
+        itemQtyMax: inboundQtyFilter.max,
+      };
+      const [waitingInboundResponse, completedInboundResponse, arrivalResponse, arrivalCreateResponse, inboundCreateResponse] = await Promise.all([
+        fetchInboundsPaginated({ page: waitingInboundPage, pageSize: PAGE_SIZE, ...inboundQuery, status: '待入库' }),
+        fetchInboundsPaginated({ page: completedInboundPage, pageSize: PAGE_SIZE, ...inboundQuery, status: '已入库' }),
+        fetchArrivalsPaginated({
+          page: arrivalPage,
+          pageSize: PAGE_SIZE,
+          search: searchTerm,
+          supplier: supplierFilter.join(',') || undefined,
+          status: arrivalStatusFilter.join(',') || '待验收,部分到货',
+          arrivedQtyMin: arrivalQtyFilter.min,
+          arrivedQtyMax: arrivalQtyFilter.max,
+        }),
         fetchManualArrivalCreateOptions(),
         fetchManualInboundCreateOptions(),
       ]);
-      setInbounds(inboundResponse.data);
-      setArrivals(arrivalResponse.data);
+      setWaitingInboundsData(waitingInboundResponse.data);
+      setCompletedInboundsData(completedInboundResponse.data);
+      setWaitingArrivalsData(arrivalResponse.data);
       setArrivalCreateOptions(arrivalCreateResponse.data);
       setInboundCreateOptions(inboundCreateResponse.data);
 
@@ -165,8 +228,27 @@ export function InboundManagement() {
   };
 
   useEffect(() => {
+    setArrivalPage(1);
+    setWaitingInboundPage(1);
+    setCompletedInboundPage(1);
+  }, [searchTerm, supplierFilter, arrivalStatusFilter, inboundStatusFilter, warehouseFilter, arrivalQtyFilter, inboundQtyFilter]);
+
+  useEffect(() => {
     void loadInboundHub();
-  }, []);
+  }, [arrivalPage, waitingInboundPage, completedInboundPage, searchTerm, supplierFilter, arrivalStatusFilter, inboundStatusFilter, warehouseFilter, arrivalQtyFilter, inboundQtyFilter]);
+
+  const resetInboundColumnFilters = () => {
+    setSearchTerm('');
+    setSupplierFilter([]);
+    setArrivalStatusFilter([]);
+    setInboundStatusFilter([]);
+    setWarehouseFilter([]);
+    setArrivalQtyFilter(EMPTY_RANGE_FILTER);
+    setInboundQtyFilter(EMPTY_RANGE_FILTER);
+    setArrivalPage(1);
+    setWaitingInboundPage(1);
+    setCompletedInboundPage(1);
+  };
 
   const openPreview = (documents: DocumentPreviewRecord[], activeDocumentId?: string) => {
     if (documents.length === 0) {
@@ -489,6 +571,141 @@ export function InboundManagement() {
       const response = await advanceArrival(arrival.id);
       setActionMessage(response.message || `到货单 ${arrival.id} 状态已推进。`);
       await loadInboundHub(selectedInbound?.id);
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    } finally {
+      setActiveId('');
+    }
+  };
+
+  const handleOpenForceArrivalEditor = async (arrival: ArrivalRecord) => {
+    if (!isSuperAdmin) {
+      setPageError('仅管理员可强制修改验收单明细。');
+      return;
+    }
+
+    setActiveId(arrival.id);
+    setPageError('');
+    try {
+      const response = await fetchArrivalDetail(arrival.id);
+      const detail: ArrivalDetailRecord = response.data;
+      setForceArrivalDraft({
+        arrivalId: detail.id,
+        poId: detail.poId,
+        supplier: detail.supplier,
+        reason: '管理员演示修正',
+        items: detail.items.map((item) => ({
+          itemId: item.id,
+          sku: item.sku,
+          productName: item.productName,
+          expectedQty: String(item.expectedQty),
+          arrivedQty: String(item.arrivedQty),
+          qualifiedQty: String(item.qualifiedQty),
+          defectQty: String(item.defectQty),
+        })),
+      });
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    } finally {
+      setActiveId('');
+    }
+  };
+
+  const updateForceArrivalLineDraftItem = (itemId: string, field: keyof ArrivalForceLineDraftItem, value: string) => {
+    setForceArrivalDraft((current) =>
+      current
+        ? {
+            ...current,
+            items: current.items.map((item) => (item.itemId === itemId ? { ...item, [field]: value } : item)),
+          }
+        : current,
+    );
+  };
+
+  const handleSubmitForceArrivalLines = async () => {
+    if (!forceArrivalDraft) {
+      return;
+    }
+
+    let payloadItems: Array<{ itemId: string; expectedQty: number; arrivedQty: number; qualifiedQty: number; defectQty: number }>;
+    try {
+      payloadItems = forceArrivalDraft.items.map((item) => {
+        const expectedQty = Number(item.expectedQty);
+        const arrivedQty = Number(item.arrivedQty);
+        const qualifiedQty = Number(item.qualifiedQty);
+        const defectQty = Number(item.defectQty);
+        if (!Number.isInteger(expectedQty) || expectedQty < 0) {
+          throw new Error(`${item.sku} 的应到数量必须是非负整数。`);
+        }
+        if (!Number.isInteger(arrivedQty) || arrivedQty < 0 || arrivedQty > expectedQty) {
+          throw new Error(`${item.sku} 的实到数量必须在 0 到应到数量之间。`);
+        }
+        if (!Number.isInteger(qualifiedQty) || qualifiedQty < 0 || qualifiedQty > arrivedQty) {
+          throw new Error(`${item.sku} 的合格数量必须在 0 到实到数量之间。`);
+        }
+        if (!Number.isInteger(defectQty) || defectQty < 0 || qualifiedQty + defectQty > arrivedQty) {
+          throw new Error(`${item.sku} 的异常数量不合法。`);
+        }
+        return { itemId: item.itemId, expectedQty, arrivedQty, qualifiedQty, defectQty };
+      });
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+      return;
+    }
+
+    if (!(await confirm(`确认强制修正验收单 ${forceArrivalDraft.arrivalId} 的明细数量？`))) {
+      return;
+    }
+
+    setActiveId(forceArrivalDraft.arrivalId);
+    setPageError('');
+    setActionMessage('');
+    try {
+      const response = await forceUpdateArrivalLines(forceArrivalDraft.arrivalId, {
+        reason: forceArrivalDraft.reason,
+        items: payloadItems,
+      });
+      setActionMessage(response.message || `验收单 ${forceArrivalDraft.arrivalId} 明细已修正。`);
+      openPreview([buildArrivalDocument(response.data)], response.data.id);
+      setForceArrivalDraft(null);
+      await loadInboundHub(selectedInbound?.id);
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    } finally {
+      setActiveId('');
+    }
+  };
+
+  const handleForceSaveInboundLines = async () => {
+    if (!selectedInbound) {
+      setPageError('请先打开一张入库单。');
+      return;
+    }
+    if (!isSuperAdmin) {
+      setPageError('仅管理员可强制修改入库单明细。');
+      return;
+    }
+    if (!(await confirm(`确认强制修正入库单 ${selectedInbound.id} 的合格数、入库数和货架？`))) {
+      return;
+    }
+
+    setActiveId(selectedInbound.id);
+    setPageError('');
+    setActionMessage('');
+    try {
+      const payload = buildDraftPayload();
+      if (!payload) {
+        return;
+      }
+      const response = await forceUpdateInboundLines(selectedInbound.id, {
+        ...payload,
+        reason: '管理员强制修正入库明细',
+      });
+      setSelectedInbound(response.data);
+      setDraftItems(createDraftItems(response.data));
+      setActionMessage(response.message || `入库单 ${selectedInbound.id} 明细已修正。`);
+      openPreview([buildInboundDocument(response.data)], response.data.id);
+      await loadInboundHub(response.data.id);
     } catch (error) {
       setPageError(getErrorMessage(error));
     } finally {
@@ -884,6 +1101,11 @@ export function InboundManagement() {
                     <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => void handleSaveInboundDraft()} disabled={isSavingDraft || !canConfirmInbound}>
                       {isSavingDraft ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />} 保存草稿
                     </Button>
+                    {isSuperAdmin ? (
+                      <Button variant="outline" className="border-amber-200 text-amber-700 hover:bg-amber-50" onClick={() => void handleForceSaveInboundLines()} disabled={activeId === selectedInbound.id}>
+                        {activeId === selectedInbound.id ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />} 强制保存明细
+                      </Button>
+                    ) : null}
                     <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleConfirmInboundOrder()} disabled={!canConfirmInbound || activeId === selectedInbound.id || selectedInbound.status === '已入库'}>
                       {activeId === selectedInbound.id ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <PackageCheck className="mr-2 h-4 w-4" />} 确认入库
                     </Button>
@@ -1006,13 +1228,72 @@ export function InboundManagement() {
         </Card>
       ) : null}
 
+      {forceArrivalDraft ? (
+        <Card className="border-amber-200 shadow-sm">
+          <CardHeader className="rounded-t-xl border-b border-amber-100 bg-amber-50/60 pb-3">
+            <CardTitle className="text-lg font-semibold text-amber-900">管理员验收明细修正</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-6">
+            <div className="text-sm text-amber-900">
+              验收单 {forceArrivalDraft.arrivalId} · 采购单 {forceArrivalDraft.poId} · {forceArrivalDraft.supplier}
+            </div>
+            <div className="overflow-x-auto rounded-xl border border-gray-200">
+              <table className="min-w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50/80">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-900">SKU / 商品</th>
+                    <th className="px-3 py-2 text-right font-semibold text-gray-900">应到</th>
+                    <th className="px-3 py-2 text-right font-semibold text-gray-900">实到</th>
+                    <th className="px-3 py-2 text-right font-semibold text-gray-900">合格</th>
+                    <th className="px-3 py-2 text-right font-semibold text-gray-900">异常</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 bg-white">
+                  {forceArrivalDraft.items.map((item) => (
+                    <tr key={item.itemId}>
+                      <td className="px-3 py-3">
+                        <div className="font-medium text-gray-900">{item.sku}</div>
+                        <div className="mt-1 text-xs text-gray-500">{item.productName}</div>
+                      </td>
+                      <td className="px-3 py-3">
+                        <Input type="number" min="0" step="1" value={item.expectedQty} onChange={(event) => updateForceArrivalLineDraftItem(item.itemId, 'expectedQty', event.target.value)} className="ml-auto w-24 text-right" />
+                      </td>
+                      <td className="px-3 py-3">
+                        <Input type="number" min="0" step="1" value={item.arrivedQty} onChange={(event) => updateForceArrivalLineDraftItem(item.itemId, 'arrivedQty', event.target.value)} className="ml-auto w-24 text-right" />
+                      </td>
+                      <td className="px-3 py-3">
+                        <Input type="number" min="0" step="1" value={item.qualifiedQty} onChange={(event) => updateForceArrivalLineDraftItem(item.itemId, 'qualifiedQty', event.target.value)} className="ml-auto w-24 text-right" />
+                      </td>
+                      <td className="px-3 py-3">
+                        <Input type="number" min="0" step="1" value={item.defectQty} onChange={(event) => updateForceArrivalLineDraftItem(item.itemId, 'defectQty', event.target.value)} className="ml-auto w-24 text-right" />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-gray-600">修正原因</label>
+              <Input value={forceArrivalDraft.reason} onChange={(event) => setForceArrivalDraft((current) => current ? { ...current, reason: event.target.value } : current)} />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => setForceArrivalDraft(null)}>取消</Button>
+              <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => void handleSubmitForceArrivalLines()} disabled={activeId === forceArrivalDraft.arrivalId}>
+                {activeId === forceArrivalDraft.arrivalId ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
+                保存验收修正
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card className="border-gray-200 shadow-sm">
         <CardHeader className="pb-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
           <CardTitle className="text-lg font-semibold text-gray-800">待验收 / 部分验收</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
-            <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">到货单号</TableHead><TableHead className="font-semibold text-gray-900">采购单号</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">实到/应到</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">到货单号</TableHead><TableHead className="font-semibold text-gray-900">采购单号</TableHead><TableHead className="font-semibold text-gray-900"><MultiSelectColumnFilter label="供应商" options={supplierFilterOptions} selectedValues={supplierFilter} onChange={setSupplierFilter} /></TableHead><TableHead className="font-semibold text-gray-900 text-right"><RangeColumnFilter label="实到数量" value={arrivalQtyFilter} onChange={setArrivalQtyFilter} minPlaceholder="最小数量" maxPlaceholder="最大数量" /></TableHead><TableHead className="font-semibold text-gray-900 text-center"><MultiSelectColumnFilter label="状态" options={arrivalStatusFilterOptions} selectedValues={arrivalStatusFilter} onChange={setArrivalStatusFilter} /></TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
             <TableBody>
               {isLoading ? <TableRow><TableCell colSpan={6} className="h-20 text-center text-sm text-gray-500">正在加载到货数据...</TableCell></TableRow> : null}
               {!isLoading && waitingArrivalRecords.length === 0 ? <TableRow><TableCell colSpan={6} className="h-20 text-center text-sm text-gray-500">当前筛选条件下没有待验收记录。</TableCell></TableRow> : null}
@@ -1026,7 +1307,8 @@ export function InboundManagement() {
                   <TableCell className="text-right">
                     <RowActionMenu
                       items={[
-                        { id: 'arrival-filter', label: '按同供应商筛选', icon: Filter, onSelect: () => setSearchTerm(arrival.supplier) },
+                        { id: 'arrival-filter', label: '按同供应商筛选', icon: Filter, onSelect: () => setSupplierFilter([arrival.supplier]) },
+                        { id: 'arrival-force-lines', label: '强制改验收明细', icon: Sparkles, onSelect: () => void handleOpenForceArrivalEditor(arrival), disabled: !isSuperAdmin || activeId === arrival.id },
                       ]}
                     />
                   </TableCell>
@@ -1034,6 +1316,17 @@ export function InboundManagement() {
               ))}
             </TableBody>
           </Table>
+          {waitingArrivalsData ? (
+            <div className="border-t border-gray-100 px-4">
+              <Pagination
+                page={waitingArrivalsData.page}
+                totalPages={waitingArrivalsData.totalPages}
+                total={waitingArrivalsData.total}
+                pageSize={waitingArrivalsData.pageSize}
+                onPageChange={setArrivalPage}
+              />
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -1043,13 +1336,13 @@ export function InboundManagement() {
             <CardTitle className="text-lg font-semibold text-gray-800">待入库 / 部分入库</CardTitle>
             <div className="flex flex-1 gap-4 w-full flex-wrap">
               <div className="relative w-full md:w-72"><Input placeholder="搜索入库单号、收货单号、供应商、库位..." className="bg-white border-gray-300 focus-visible:ring-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /></div>
-              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="">所有状态</option><option value="待入库">待入库</option><option value="已入库">已入库</option></select>
+              <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={resetInboundColumnFilters} disabled={!searchTerm && !hasInboundColumnFilters}>重置筛选</Button>
             </div>
           </div>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
-            <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">入库单号</TableHead><TableHead className="font-semibold text-gray-900">收货单号</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">入库数量</TableHead><TableHead className="font-semibold text-gray-900">仓库</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">入库单号</TableHead><TableHead className="font-semibold text-gray-900">收货单号</TableHead><TableHead className="font-semibold text-gray-900"><MultiSelectColumnFilter label="供应商" options={supplierFilterOptions} selectedValues={supplierFilter} onChange={setSupplierFilter} /></TableHead><TableHead className="font-semibold text-gray-900 text-right"><RangeColumnFilter label="入库数量" value={inboundQtyFilter} onChange={setInboundQtyFilter} minPlaceholder="最小数量" maxPlaceholder="最大数量" /></TableHead><TableHead className="font-semibold text-gray-900"><MultiSelectColumnFilter label="仓库" options={warehouseFilterOptions} selectedValues={warehouseFilter} onChange={setWarehouseFilter} /></TableHead><TableHead className="font-semibold text-gray-900 text-center"><MultiSelectColumnFilter label="状态" options={inboundStatusFilterOptions} selectedValues={inboundStatusFilter} onChange={setInboundStatusFilter} /></TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
             <TableBody>
               {isLoading ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">正在加载入库数据...</TableCell></TableRow> : null}
               {!isLoading && waitingInboundRecords.length === 0 ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有待入库记录。</TableCell></TableRow> : null}
@@ -1079,7 +1372,18 @@ export function InboundManagement() {
                 </TableRow>
               ))}
             </TableBody>
-            </Table>
+          </Table>
+          {waitingInboundsData && showWaitingInbounds ? (
+            <div className="border-t border-gray-100 px-4">
+              <Pagination
+                page={waitingInboundsData.page}
+                totalPages={waitingInboundsData.totalPages}
+                total={waitingInboundsData.total}
+                pageSize={waitingInboundsData.pageSize}
+                onPageChange={setWaitingInboundPage}
+              />
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -1089,7 +1393,7 @@ export function InboundManagement() {
         </CardHeader>
         <CardContent className="p-0">
           <Table>
-            <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">入库单号</TableHead><TableHead className="font-semibold text-gray-900">收货单号</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">入库数量</TableHead><TableHead className="font-semibold text-gray-900">仓库</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">入库单号</TableHead><TableHead className="font-semibold text-gray-900">收货单号</TableHead><TableHead className="font-semibold text-gray-900"><MultiSelectColumnFilter label="供应商" options={supplierFilterOptions} selectedValues={supplierFilter} onChange={setSupplierFilter} /></TableHead><TableHead className="font-semibold text-gray-900 text-right"><RangeColumnFilter label="入库数量" value={inboundQtyFilter} onChange={setInboundQtyFilter} minPlaceholder="最小数量" maxPlaceholder="最大数量" /></TableHead><TableHead className="font-semibold text-gray-900"><MultiSelectColumnFilter label="仓库" options={warehouseFilterOptions} selectedValues={warehouseFilter} onChange={setWarehouseFilter} /></TableHead><TableHead className="font-semibold text-gray-900 text-center"><MultiSelectColumnFilter label="状态" options={inboundStatusFilterOptions} selectedValues={inboundStatusFilter} onChange={setInboundStatusFilter} /></TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
             <TableBody>
               {isLoading ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">正在加载入库数据...</TableCell></TableRow> : null}
               {!isLoading && completedInboundRecords.length === 0 ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有已入库记录。</TableCell></TableRow> : null}
@@ -1103,13 +1407,14 @@ export function InboundManagement() {
                   <TableCell className="text-center"><Badge variant={inbound.status === '已入库' ? 'success' : 'warning'}>{inbound.status}</Badge></TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="icon" className="text-gray-500 hover:bg-blue-50 hover:text-blue-600" onClick={() => void handleOpenInboundWorkspace(inbound.id)}>
+                      <Button variant="ghost" size="icon" className="text-gray-500 hover:bg-blue-50 hover:text-blue-600" onClick={() => void handlePreviewInboundDocument(inbound.id)}>
                         <Eye className="h-4 w-4" />
                       </Button>
                       <RowActionMenu
                         items={[
                           { id: 'inbound-open', label: '进入单据页', icon: Eye, onSelect: () => void handleOpenInboundWorkspace(inbound.id) },
-                          { id: 'inbound-preview', label: '打印入库单', icon: PackageCheck, onSelect: () => void handlePreviewInboundDocument(inbound.id) },
+                          { id: 'inbound-preview', label: '查看入库单', icon: Eye, onSelect: () => void handlePreviewInboundDocument(inbound.id) },
+                          { id: 'inbound-print', label: '打印入库单', icon: PackageCheck, onSelect: () => void handlePreviewInboundDocument(inbound.id) },
                           { id: 'inbound-force-status', label: '强制修改状态', icon: Sparkles, onSelect: () => void handleForceInboundStatus(inbound), disabled: !isSuperAdmin },
                           { id: 'inbound-delete', label: '删除入库单', icon: Trash2, onSelect: () => void handleDeleteInbound(inbound), disabled: !isSuperAdmin || activeId === inbound.id, tone: 'danger' },
                         ]}
@@ -1120,6 +1425,17 @@ export function InboundManagement() {
               ))}
             </TableBody>
           </Table>
+          {completedInboundsData && showCompletedInbounds ? (
+            <div className="border-t border-gray-100 px-4">
+              <Pagination
+                page={completedInboundsData.page}
+                totalPages={completedInboundsData.totalPages}
+                total={completedInboundsData.total}
+                pageSize={completedInboundsData.pageSize}
+                onPageChange={setCompletedInboundPage}
+              />
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

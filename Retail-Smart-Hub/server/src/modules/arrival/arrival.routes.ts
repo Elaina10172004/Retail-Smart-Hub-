@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
-import { requirePermission } from '../../shared/auth';
+import { requirePermission, requireSuperAdmin } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
 import { paginateList } from '../../shared/paginate';
 import {
   advanceArrival,
   createManualArrivalRecords,
+  forceUpdateArrivalLines,
   getArrivalDetail,
   listArrivals,
   listManualArrivalCandidateItems,
@@ -25,7 +26,18 @@ arrivalRouter.get('/summary', requirePermission('procurement.manage'), (_req, re
 });
 
 arrivalRouter.get('/', requirePermission('procurement.manage'), (req, res) => {
-  return ok(res, paginateList(req, () => listArrivals(), { searchFields: ['id', 'poId', 'supplier'] }));
+  return ok(res, paginateList(req, () => listArrivals(), {
+    searchFields: ['id', 'poId', 'supplier'],
+    filters: [
+      { queryKey: 'supplier', field: 'supplier' },
+      { queryKey: 'status', field: 'status' },
+    ],
+    rangeFilters: [
+      { minKey: 'arrivedAtFrom', maxKey: 'arrivedAtTo', field: 'arrivedAt', type: 'date' },
+      { minKey: 'arrivedQtyMin', maxKey: 'arrivedQtyMax', field: 'arrivedQty', type: 'number' },
+      { minKey: 'expectedQtyMin', maxKey: 'expectedQtyMax', field: 'expectedQty', type: 'number' },
+    ],
+  }));
 });
 
 arrivalRouter.get('/create-options', requirePermission('procurement.manage'), (_req, res) => {
@@ -39,6 +51,15 @@ arrivalRouter.post('/', requirePermission('procurement.manage'), (req, res) => {
     return ok(res, result, `已创建 ${result.arrivalIds.length} 张验收单。`);
   } catch (error) {
     return fail(res, 400, error instanceof Error ? error.message : 'Create manual arrival records failed');
+  }
+});
+
+arrivalRouter.post('/:id/lines/force', requirePermission('procurement.manage'), requireSuperAdmin, (req, res) => {
+  try {
+    const detail = forceUpdateArrivalLines(req.params.id, req.body);
+    return ok(res, detail, '验收单明细已强制修正。');
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Force update arrival lines failed');
   }
 });
 

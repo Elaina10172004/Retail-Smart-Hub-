@@ -1,34 +1,13 @@
 ---
 name: RetailFlow Operations
 description: 处理采购、销售、发货、验收、入库、收款、付款等受控业务操作，统一走待确认动作。
-triggers:
-  - 创建供应商
-  - 供应商档案
-  - 创建采购单
-  - 创建销售单
-  - 创建订单
-  - 发货
-  - 验收
-  - 入库
-  - 收款
-  - 付款
-  - 确认执行
-  - 推进
-  - 流转
-  - 合并
-  - pending action
-tools:
-  - create_supplier_profile
-  - create_procurement_order
-  - create_sales_order
-  - advance_arrival_status
-  - confirm_inbound
-  - dispatch_shipping
-  - register_receipt
-  - register_payment
-  - generate_shortage_procurement
-enabled: true
 ---
+
+## Runtime Metadata
+
+- Triggers: 创建供应商, 供应商档案, 创建采购单, 创建销售单, 创建订单, 发货, 验收, 入库, 收款, 付款, 确认执行, 推进, 流转, 合并, pending action
+- Recommended tools: create_supplier_profile, create_procurement_order, create_sales_order, advance_arrival_status, confirm_inbound, dispatch_shipping, register_receipt, register_payment, generate_shortage_procurement
+- Enabled: true
 
 ## 适用任务
 

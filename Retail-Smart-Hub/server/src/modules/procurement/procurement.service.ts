@@ -8,6 +8,7 @@
 } from '../../database/db';
 import { addDays, currentDateString, formatCurrency } from '../../shared/format';
 import { DEFAULT_WAREHOUSE_ID } from '../../shared/warehouse';
+import { recalculatePurchaseOrderStatus } from './procurement-workflow.service';
 
 export interface ProcurementOrder {
   id: string;
@@ -119,6 +120,17 @@ export interface ProcurementFormProductOption {
 export interface ProcurementFormOptions {
   suppliers: ProcurementFormSupplierOption[];
   products: ProcurementFormProductOption[];
+}
+
+export interface ForceUpdateProcurementLineItemPayload {
+  itemId: string;
+  orderedQty: number;
+  unitCost: number;
+}
+
+export interface ForceUpdateProcurementLinesPayload {
+  reason?: string;
+  items: ForceUpdateProcurementLineItemPayload[];
 }
 
 export interface CreateProcurementNewProductPayload {
@@ -688,6 +700,181 @@ export function generateSuggestedPurchaseOrders() {
   });
 
   return transaction();
+}
+
+function getMinimumOrderedQuantityForPurchaseItem(itemId: string) {
+  return db.prepare<{ minimumQty: number }>(`
+    SELECT COALESCE(MAX(qty), 0) as minimumQty
+    FROM (
+      SELECT arrived_qty as qty FROM purchase_order_items WHERE id = ?
+      UNION ALL
+      SELECT arrived_qty as qty FROM receiving_note_items WHERE purchase_order_item_id = ?
+      UNION ALL
+      SELECT qualified_qty as qty FROM receiving_note_items WHERE purchase_order_item_id = ?
+      UNION ALL
+      SELECT inbound_qty as qty FROM receiving_note_items WHERE purchase_order_item_id = ?
+    )
+  `).get(itemId, itemId, itemId, itemId)?.minimumQty ?? 0;
+}
+
+function refreshReceivingNoteTotals(receivingNoteIds: Iterable<string>) {
+  const totalsQuery = db.prepare<{
+    expectedQty: number;
+    arrivedQty: number;
+    qualifiedQty: number;
+    defectQty: number;
+  }>(`
+    SELECT
+      COALESCE(SUM(expected_qty), 0) as expectedQty,
+      COALESCE(SUM(arrived_qty), 0) as arrivedQty,
+      COALESCE(SUM(qualified_qty), 0) as qualifiedQty,
+      COALESCE(SUM(defect_qty), 0) as defectQty
+    FROM receiving_note_items
+    WHERE receiving_note_id = ?
+  `);
+  const updateNote = db.prepare(
+    'UPDATE receiving_notes SET expected_qty = ?, arrived_qty = ?, qualified_qty = ?, defect_qty = ? WHERE id = ?',
+  );
+
+  for (const receivingNoteId of receivingNoteIds) {
+    const totals = totalsQuery.get(receivingNoteId) ?? { expectedQty: 0, arrivedQty: 0, qualifiedQty: 0, defectQty: 0 };
+    updateNote.run(totals.expectedQty, totals.arrivedQty, totals.qualifiedQty, totals.defectQty, receivingNoteId);
+  }
+}
+
+function syncPayableAmountForPurchaseOrder(purchaseOrderId: string) {
+  const amountDue =
+    db.prepare<{ amountDue: number }>(
+      'SELECT COALESCE(SUM(ordered_qty * unit_cost), 0) as amountDue FROM purchase_order_items WHERE purchase_order_id = ?',
+    ).get(purchaseOrderId)?.amountDue ?? 0;
+  const payable = db
+    .prepare<{ id: string; amountPaid: number }>('SELECT id, amount_paid as amountPaid FROM payables WHERE purchase_order_id = ?')
+    .get(purchaseOrderId);
+
+  if (!payable) {
+    createPayableForPurchaseOrder(purchaseOrderId, {
+      seedByStatus: false,
+      remark: '采购单管理员修正后自动补齐应付记录。',
+    });
+    return;
+  }
+
+  if (amountDue < payable.amountPaid) {
+    throw new Error(`Payable amount cannot be lower than already paid amount ${payable.amountPaid}`);
+  }
+
+  db.prepare('UPDATE payables SET amount_due = ? WHERE id = ?').run(amountDue, payable.id);
+}
+
+export function forceUpdateProcurementOrderLines(id: string, payload: ForceUpdateProcurementLinesPayload) {
+  const order = db.prepare<{ id: string; status: string }>('SELECT id, status FROM purchase_orders WHERE id = ?').get(id);
+  if (!order) {
+    throw new Error('Procurement order not found');
+  }
+
+  if (!Array.isArray(payload.items) || payload.items.length === 0) {
+    throw new Error('items are required');
+  }
+
+  const existingItems = db
+    .prepare<{ id: string; orderedQty: number; unitCost: number }>(
+      'SELECT id, ordered_qty as orderedQty, unit_cost as unitCost FROM purchase_order_items WHERE purchase_order_id = ? ORDER BY id ASC',
+    )
+    .all(id);
+  const existingItemMap = new Map(existingItems.map((item) => [item.id, item]));
+  const seenItemIds = new Set<string>();
+  const normalizedItems = payload.items.map((item, index) => {
+    const itemId = String(item.itemId || '').trim();
+    const orderedQty = Number(item.orderedQty);
+    const unitCost = Number(item.unitCost);
+
+    if (!itemId) {
+      throw new Error(`items[${index}].itemId is required`);
+    }
+    if (seenItemIds.has(itemId)) {
+      throw new Error(`Duplicate procurement item ${itemId}`);
+    }
+    const existingItem = existingItemMap.get(itemId);
+    if (!existingItem) {
+      throw new Error(`Procurement item ${itemId} does not belong to ${id}`);
+    }
+    if (!Number.isInteger(orderedQty) || orderedQty <= 0) {
+      throw new Error(`items[${index}].orderedQty must be a positive integer`);
+    }
+    if (!Number.isFinite(unitCost) || unitCost <= 0) {
+      throw new Error(`items[${index}].unitCost must be greater than 0`);
+    }
+
+    const minimumQty = getMinimumOrderedQuantityForPurchaseItem(itemId);
+    if (orderedQty < minimumQty) {
+      throw new Error(`采购明细 ${itemId} 已产生 ${minimumQty} 件下游数量，采购数量不能低于该值。`);
+    }
+
+    seenItemIds.add(itemId);
+    return {
+      itemId,
+      orderedQty,
+      unitCost,
+      previousOrderedQty: existingItem.orderedQty,
+      previousUnitCost: existingItem.unitCost,
+    };
+  });
+
+  const reason = String(payload.reason || '').trim() || '管理员强制修正采购明细';
+  const updatePurchaseItem = db.prepare('UPDATE purchase_order_items SET ordered_qty = ?, unit_cost = ? WHERE id = ?');
+  const receivingItemsQuery = db.prepare<{
+    id: string;
+    receivingNoteId: string;
+    expectedQty: number;
+    arrivedQty: number;
+    qualifiedQty: number;
+    inboundQty: number;
+  }>(`
+    SELECT
+      id,
+      receiving_note_id as receivingNoteId,
+      expected_qty as expectedQty,
+      arrived_qty as arrivedQty,
+      qualified_qty as qualifiedQty,
+      inbound_qty as inboundQty
+    FROM receiving_note_items
+    WHERE purchase_order_item_id = ?
+    ORDER BY receiving_note_id ASC, id ASC
+  `);
+  const updateReceivingExpected = db.prepare('UPDATE receiving_note_items SET expected_qty = ? WHERE id = ?');
+
+  const transaction = db.transaction(() => {
+    const touchedReceivingNoteIds = new Set<string>();
+
+    normalizedItems.forEach((item) => {
+      updatePurchaseItem.run(item.orderedQty, item.unitCost, item.itemId);
+
+      const receivingItems = receivingItemsQuery.all(item.itemId);
+      receivingItems.forEach((receivingItem) => {
+        const minimumQty = Math.max(receivingItem.arrivedQty, receivingItem.qualifiedQty, receivingItem.inboundQty);
+        if (item.orderedQty < minimumQty) {
+          throw new Error(`采购明细 ${item.itemId} 的下游单据 ${receivingItem.id} 数量已超过新采购数量。`);
+        }
+        if (receivingItems.length === 1 || receivingItem.expectedQty === item.previousOrderedQty) {
+          updateReceivingExpected.run(item.orderedQty, receivingItem.id);
+          touchedReceivingNoteIds.add(receivingItem.receivingNoteId);
+        }
+      });
+    });
+
+    refreshReceivingNoteTotals(touchedReceivingNoteIds);
+    syncPayableAmountForPurchaseOrder(id);
+    recalculatePurchaseOrderStatus(id);
+
+    appendAuditLog('force_update_purchase_order_lines', 'purchase_order', id, {
+      reason,
+      itemCount: normalizedItems.length,
+      items: normalizedItems,
+    });
+  });
+
+  transaction();
+  return getProcurementOrderDetail(id) as ProcurementOrderDetail;
 }
 
 export function updateProcurementOrderStatus(id: string, nextStatus: string) {

@@ -72,6 +72,10 @@ function hasAnyPermission(userPermissions: string[], requiredPermissions?: strin
   return requiredPermissions.some((permission) => userPermissions.includes(permission));
 }
 
+function areStringArraysEqual(left: string[], right: string[]) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
 export function Layout({ children, activeMenu, setActiveMenu }: LayoutProps) {
   const { user, logout } = useAuth();
   const [notifications, setNotifications] = useState<SystemNotificationRecord[]>([]);
@@ -243,8 +247,14 @@ export function Layout({ children, activeMenu, setActiveMenu }: LayoutProps) {
       return;
     }
 
-    setReadIds((current) => current.filter((id) => visibleNotificationIds.includes(id)));
-    setDeletedIds((current) => current.filter((id) => notifications.some((item) => item.id === id)));
+    setReadIds((current) => {
+      const next = current.filter((id) => visibleNotificationIds.includes(id));
+      return areStringArraysEqual(current, next) ? current : next;
+    });
+    setDeletedIds((current) => {
+      const next = current.filter((id) => notifications.some((item) => item.id === id));
+      return areStringArraysEqual(current, next) ? current : next;
+    });
   }, [hasLoadedNotifications, notifications, visibleNotificationIds]);
 
   useEffect(() => {

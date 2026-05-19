@@ -1,5 +1,6 @@
 import { apiClient } from '@/services/api/client';
-import type { ApiEnvelope } from '@/types/api';
+import type { ApiEnvelope, PaginatedData } from '@/types/api';
+import { type MaybePaginated, pageQuery, unwrapPaginatedEnvelope } from '@/services/api/pagination';
 import type {
   CreateShipmentDocumentPayload,
   ShippingDetailRecord,
@@ -7,8 +8,13 @@ import type {
   ShippingWorkbenchCustomer,
 } from '@/types/shipping';
 
-export function fetchShipments() {
-  return apiClient.get<ApiEnvelope<ShippingRecord[]>>('/shipping');
+export async function fetchShipments() {
+  const response = await apiClient.get<ApiEnvelope<MaybePaginated<ShippingRecord>>>('/shipping?pageSize=100');
+  return unwrapPaginatedEnvelope(response);
+}
+
+export function fetchShipmentsPaginated(params?: { page?: number; pageSize?: number; search?: string; status?: string }) {
+  return apiClient.get<ApiEnvelope<PaginatedData<ShippingRecord>>>(`/shipping${pageQuery(params)}`);
 }
 
 export function fetchShippingWorkbench() {

@@ -5,6 +5,14 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Pagination } from '@/components/ui/pagination';
+import {
+  EMPTY_RANGE_FILTER,
+  MultiSelectColumnFilter,
+  RangeColumnFilter,
+  buildColumnFilterOptions,
+  isRangeFilterActive,
+  type RangeFilterValue,
+} from '@/components/ui/table-column-filter';
 import type { PaginatedData } from '@/types/api';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
@@ -22,6 +30,7 @@ import {
   fetchProcurementOrderDetail,
   fetchProcurementOrders,
   fetchProcurementSuggestions,
+  forceUpdateProcurementLines,
   generateSuggestedPurchaseOrders,
   registerProcurementArrival,
   updateProcurementStatus,
@@ -32,6 +41,7 @@ import type {
   ProcurementFormOptions,
   ProcurementFormProductOption,
   ProcurementOrder,
+  ProcurementOrderDetail,
   ProcurementSuggestionSummary,
 } from '@/types/procurement';
 
@@ -54,6 +64,15 @@ interface ProcurementItemDraft {
   quantity: string;
   unitCost: string;
   newProduct: ProcurementNewProductDraft;
+}
+
+interface ProcurementForceLineDraftItem {
+  itemId: string;
+  sku: string;
+  productName: string;
+  arrivedQty: number;
+  orderedQty: string;
+  unitCost: string;
 }
 
 const PROCUREMENT_FORCE_STATUS_OPTIONS = ['待审核', '采购中', '部分到货', '已完成', '已取消'] as const;
@@ -138,7 +157,11 @@ export function ProcurementManagement() {
   const [formOptions, setFormOptions] = useState<ProcurementFormOptions>({ suppliers: [], products: [] });
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const [statusFilter, setStatusFilter] = useState('');
+  const [supplierFilter, setSupplierFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [createDateFilter, setCreateDateFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
+  const [expectedDateFilter, setExpectedDateFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
+  const [amountFilter, setAmountFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -160,14 +183,14 @@ export function ProcurementManagement() {
     currentStatus: string;
     nextStatus: ProcurementForceStatus;
   } | null>(null);
+  const [forceLineDraft, setForceLineDraft] = useState<{
+    orderId: string;
+    supplier: string;
+    reason: string;
+    items: ProcurementForceLineDraftItem[];
+  } | null>(null);
 
-  const filteredOrders = useMemo(() => {
-    const items = ordersData?.items ?? [];
-    return items.filter((item) => {
-      const matchesStatus = !statusFilter || item.status === statusFilter;
-      return matchesStatus;
-    });
-  }, [ordersData, statusFilter]);
+  const filteredOrders = ordersData?.items ?? [];
 
   const selectedSupplier = useMemo(
     () => formOptions.suppliers.find((item) => item.id === supplierId) || null,
@@ -183,6 +206,26 @@ export function ProcurementManagement() {
       })),
     [formOptions.suppliers],
   );
+  const supplierFilterOptions = useMemo(
+    () => buildColumnFilterOptions([
+      ...formOptions.suppliers.map((supplier) => supplier.name),
+      ...(ordersData?.items ?? []).map((order) => order.supplier),
+    ]),
+    [formOptions.suppliers, ordersData],
+  );
+  const statusFilterOptions = useMemo(
+    () => buildColumnFilterOptions([
+      ...PROCUREMENT_FORCE_STATUS_OPTIONS,
+      ...(ordersData?.items ?? []).map((order) => order.status),
+    ]),
+    [ordersData],
+  );
+  const hasColumnFilters =
+    supplierFilter.length > 0 ||
+    statusFilter.length > 0 ||
+    isRangeFilterActive(createDateFilter) ||
+    isRangeFilterActive(expectedDateFilter) ||
+    isRangeFilterActive(amountFilter);
   const supplierMap = useMemo(
     () => new Map(formOptions.suppliers.map((supplier) => [supplier.id, supplier])),
     [formOptions.suppliers],
@@ -232,7 +275,19 @@ export function ProcurementManagement() {
 
     try {
       const [ordersResponse, suggestionResponse, formOptionsResponse] = await Promise.all([
-        fetchProcurementOrders({ page, pageSize: 20, search: searchTerm }),
+        fetchProcurementOrders({
+          page,
+          pageSize: 20,
+          search: searchTerm,
+          supplier: supplierFilter.join(',') || undefined,
+          status: statusFilter.join(',') || undefined,
+          createDateFrom: createDateFilter.min,
+          createDateTo: createDateFilter.max,
+          expectedDateFrom: expectedDateFilter.min,
+          expectedDateTo: expectedDateFilter.max,
+          amountMin: amountFilter.min,
+          amountMax: amountFilter.max,
+        }),
         fetchProcurementSuggestions(),
         fetchProcurementFormOptions(),
       ]);
@@ -258,7 +313,7 @@ export function ProcurementManagement() {
     } else {
       setCurrentPage(1); // will trigger the other effect
     }
-  }, [searchTerm]);
+  }, [searchTerm, supplierFilter, statusFilter, createDateFilter, expectedDateFilter, amountFilter]);
 
   useEffect(() => {
     void loadProcurement(currentPage);
@@ -344,13 +399,23 @@ export function ProcurementManagement() {
   };
 
   const handleFilterSupplier = (supplier: string) => {
-    setSearchTerm(supplier);
+    setSupplierFilter([supplier]);
     setActionMessage(`已按供应商 ${supplier} 筛选采购列表。`);
   };
 
   const handleFilterStatus = (status: string) => {
-    setStatusFilter(status);
+    setStatusFilter([status]);
     setActionMessage(`已按状态 ${status} 筛选采购列表。`);
+  };
+
+  const handleResetColumnFilters = () => {
+    setSearchTerm('');
+    setSupplierFilter([]);
+    setStatusFilter([]);
+    setCreateDateFilter(EMPTY_RANGE_FILTER);
+    setExpectedDateFilter(EMPTY_RANGE_FILTER);
+    setAmountFilter(EMPTY_RANGE_FILTER);
+    setCurrentPage(1);
   };
 
   const handleForceUpdateStatus = async (order: ProcurementOrder) => {
@@ -388,6 +453,97 @@ export function ProcurementManagement() {
       const response = await updateProcurementStatus(forceStatusDraft.orderId, { status: forceStatusDraft.nextStatus });
       setActionMessage(response.message || `采购单 ${forceStatusDraft.orderId} 状态已更新。`);
       setForceStatusDraft(null);
+      await loadProcurement();
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleOpenForceLineEditor = async (order: ProcurementOrder) => {
+    if (!isSuperAdmin) {
+      setPageError('仅管理员可强制修改采购单明细。');
+      return;
+    }
+
+    setIsGenerating(true);
+    setPageError('');
+    try {
+      const response = await fetchProcurementOrderDetail(order.id);
+      const detail: ProcurementOrderDetail = response.data;
+      setForceLineDraft({
+        orderId: detail.id,
+        supplier: detail.supplier,
+        reason: '管理员演示修正',
+        items: detail.items.map((item) => ({
+          itemId: item.id,
+          sku: item.sku,
+          productName: item.productName,
+          arrivedQty: item.arrivedQty,
+          orderedQty: String(item.orderedQty),
+          unitCost: String(item.unitCost),
+        })),
+      });
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const updateForceLineDraftItem = (itemId: string, field: 'orderedQty' | 'unitCost', value: string) => {
+    setForceLineDraft((current) =>
+      current
+        ? {
+            ...current,
+            items: current.items.map((item) => (item.itemId === itemId ? { ...item, [field]: value } : item)),
+          }
+        : current,
+    );
+  };
+
+  const handleSubmitForceLines = async () => {
+    if (!forceLineDraft) {
+      return;
+    }
+
+    let payloadItems: Array<{ itemId: string; orderedQty: number; unitCost: number }>;
+    try {
+      payloadItems = forceLineDraft.items.map((item) => {
+        const orderedQty = Number(item.orderedQty);
+        const unitCost = Number(item.unitCost);
+        if (!Number.isInteger(orderedQty) || orderedQty <= 0) {
+          throw new Error(`${item.sku} 的采购数量必须是正整数。`);
+        }
+        if (orderedQty < item.arrivedQty) {
+          throw new Error(`${item.sku} 已到货 ${item.arrivedQty} 件，采购数量不能低于已到货数量。`);
+        }
+        if (!Number.isFinite(unitCost) || unitCost <= 0) {
+          throw new Error(`${item.sku} 的采购单价必须大于 0。`);
+        }
+        return { itemId: item.itemId, orderedQty, unitCost };
+      });
+    } catch (error) {
+      setPageError(getErrorMessage(error));
+      return;
+    }
+
+    if (!(await confirm(`确认强制修正采购单 ${forceLineDraft.orderId} 的数量和单价？`))) {
+      return;
+    }
+
+    setIsGenerating(true);
+    setPageError('');
+    setActionMessage('');
+    try {
+      const response = await forceUpdateProcurementLines(forceLineDraft.orderId, {
+        reason: forceLineDraft.reason,
+        items: payloadItems,
+      });
+      setActionMessage(response.message || `采购单 ${forceLineDraft.orderId} 明细已修正。`);
+      setForceLineDraft(null);
+      openPreview([buildProcurementDocument(response.data)], response.data.id);
       await loadProcurement();
     } catch (error) {
       setPageError(getErrorMessage(error));
@@ -987,14 +1143,9 @@ export function ProcurementManagement() {
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500" />
                 <Input placeholder="搜索采购单号、供应商..." className="bg-white border-gray-300 pl-9 focus-visible:ring-blue-500" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
               </div>
-              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">所有状态</option>
-                <option value="待审核">待审核</option>
-                <option value="采购中">采购中</option>
-                <option value="部分到货">部分到货</option>
-                <option value="已完成">已完成</option>
-                <option value="已取消">已取消</option>
-              </select>
+              <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={handleResetColumnFilters} disabled={!searchTerm && !hasColumnFilters}>
+                重置筛选
+              </Button>
             </div>
           </div>
         </CardHeader>
@@ -1003,12 +1154,22 @@ export function ProcurementManagement() {
             <TableHeader>
               <TableRow className="bg-gray-50/50 hover:bg-gray-50/50">
                 <TableHead className="font-semibold text-gray-900">采购单号</TableHead>
-                <TableHead className="font-semibold text-gray-900">供应商</TableHead>
-                <TableHead className="font-semibold text-gray-900">创建日期</TableHead>
-                <TableHead className="font-semibold text-gray-900">预计到货日期</TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <MultiSelectColumnFilter label="供应商" options={supplierFilterOptions} selectedValues={supplierFilter} onChange={setSupplierFilter} />
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <RangeColumnFilter label="创建日期" inputType="date" value={createDateFilter} onChange={setCreateDateFilter} minPlaceholder="开始日期" maxPlaceholder="结束日期" />
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <RangeColumnFilter label="预计到货日期" inputType="date" value={expectedDateFilter} onChange={setExpectedDateFilter} minPlaceholder="开始日期" maxPlaceholder="结束日期" />
+                </TableHead>
                 <TableHead className="font-semibold text-gray-900">来源</TableHead>
-                <TableHead className="font-semibold text-gray-900">金额</TableHead>
-                <TableHead className="font-semibold text-gray-900">状态</TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <RangeColumnFilter label="金额" value={amountFilter} onChange={setAmountFilter} minPlaceholder="最小金额" maxPlaceholder="最大金额" />
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <MultiSelectColumnFilter label="状态" options={statusFilterOptions} selectedValues={statusFilter} onChange={setStatusFilter} />
+                </TableHead>
                 <TableHead className="text-right font-semibold text-gray-900">操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -1045,6 +1206,7 @@ export function ProcurementManagement() {
                             : []),
                           { id: 'filter-supplier', label: '按同供应商筛选', icon: Filter, onSelect: () => handleFilterSupplier(po.supplier) },
                           { id: 'filter-status', label: '按同状态筛选', icon: Filter, onSelect: () => handleFilterStatus(po.status) },
+                          { id: 'force-lines', label: '强制改数量/价格', icon: Sparkles, onSelect: () => void handleOpenForceLineEditor(po), disabled: !isSuperAdmin },
                           { id: 'force-status', label: '强制改状态', icon: Sparkles, onSelect: () => void handleForceUpdateStatus(po), disabled: !isSuperAdmin },
                           { id: 'delete-po', label: '删除采购单', icon: Trash2, onSelect: () => void handleDeleteOrder(po), disabled: !isSuperAdmin, tone: 'danger' },
                         ]}
@@ -1095,6 +1257,67 @@ export function ProcurementManagement() {
                 <Button onClick={() => void handleSubmitForceStatus()} disabled={isGenerating}>
                   {isGenerating ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
                   确认修改
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
+
+      {forceLineDraft ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4 backdrop-blur-[1px]">
+          <Card className="max-h-[90vh] w-full max-w-5xl overflow-hidden border-slate-200 shadow-xl">
+            <CardHeader className="border-b border-slate-100">
+              <CardTitle className="text-base text-slate-900">管理员强制修正采购明细</CardTitle>
+            </CardHeader>
+            <CardContent className="max-h-[calc(90vh-72px)] space-y-4 overflow-y-auto pt-4 text-sm text-slate-700">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+                采购单：{forceLineDraft.orderId} / {forceLineDraft.supplier}。数量不能低于已产生的到货、验收或入库数量，单价会同步应付金额。
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-gray-200">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50/80">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold text-gray-900">SKU / 商品</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-900">已到货</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-900">采购数量</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-900">采购单价</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-900">行金额</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 bg-white">
+                    {forceLineDraft.items.map((item) => {
+                      const orderedQty = Number(item.orderedQty) || 0;
+                      const unitCost = Number(item.unitCost) || 0;
+                      return (
+                        <tr key={item.itemId}>
+                          <td className="px-3 py-3">
+                            <div className="font-medium text-gray-900">{item.sku}</div>
+                            <div className="mt-1 text-xs text-gray-500">{item.productName}</div>
+                          </td>
+                          <td className="px-3 py-3 text-right text-gray-600">{item.arrivedQty}</td>
+                          <td className="px-3 py-3">
+                            <Input type="number" min={Math.max(item.arrivedQty, 1)} step="1" value={item.orderedQty} onChange={(event) => updateForceLineDraftItem(item.itemId, 'orderedQty', event.target.value)} className="ml-auto w-28 text-right" />
+                          </td>
+                          <td className="px-3 py-3">
+                            <Input type="number" min="0.01" step="0.01" value={item.unitCost} onChange={(event) => updateForceLineDraftItem(item.itemId, 'unitCost', event.target.value)} className="ml-auto w-32 text-right" />
+                          </td>
+                          <td className="px-3 py-3 text-right font-medium text-gray-900">{formatCurrency(orderedQty * unitCost)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-gray-600">修正原因</label>
+                <Input value={forceLineDraft.reason} onChange={(event) => setForceLineDraft((current) => current ? { ...current, reason: event.target.value } : current)} placeholder="例如：演示数据修正、供应商补差价" />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setForceLineDraft(null)}>取消</Button>
+                <Button onClick={() => void handleSubmitForceLines()} disabled={isGenerating}>
+                  {isGenerating ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  保存强制修正
                 </Button>
               </div>
             </CardContent>

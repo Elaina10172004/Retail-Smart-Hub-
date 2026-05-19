@@ -359,7 +359,7 @@ function buildSecurityLevels(): SecurityLevelRecord[] {
 
 function buildRoleTemplates(roles: RoleRecord[]): RoleTemplateRecord[] {
   const roleByName = new Map(roles.map((role) => [role.name, role]));
-  const templates: Array<Omit<RoleTemplateRecord, 'basedOnRoleId'>> = [
+  const templates: Array<Omit<RoleTemplateRecord, 'basedOnRoleId'> & { basedOnRoleName?: string }> = [
     {
       id: 'TEMPLATE-ADMIN',
       name: '系统管理员模板',
@@ -368,6 +368,7 @@ function buildRoleTemplates(roles: RoleRecord[]): RoleTemplateRecord[] {
       recommendedFor: '项目负责人、系统管理员',
       securityLevel: 'L4',
       keyPermissions: ['settings.access-control', 'settings.master-data', 'finance.view', 'finance.receivable', 'finance.payable'],
+      basedOnRoleName: '系统管理员',
     },
     {
       id: 'TEMPLATE-OPS',
@@ -377,6 +378,7 @@ function buildRoleTemplates(roles: RoleRecord[]): RoleTemplateRecord[] {
       recommendedFor: '运营主管、仓储主管',
       securityLevel: 'L3',
       keyPermissions: ['orders.create', 'inventory.view', 'inventory.write', 'procurement.manage', 'shipping.dispatch'],
+      basedOnRoleName: '运营经理',
     },
     {
       id: 'TEMPLATE-FINANCE',
@@ -386,6 +388,7 @@ function buildRoleTemplates(roles: RoleRecord[]): RoleTemplateRecord[] {
       recommendedFor: '财务专员、财务主管',
       securityLevel: 'L4',
       keyPermissions: ['finance.view', 'finance.receivable', 'finance.payable', 'reports.view'],
+      basedOnRoleName: '财务专员',
     },
     {
       id: 'TEMPLATE-SERVICE',
@@ -395,11 +398,12 @@ function buildRoleTemplates(roles: RoleRecord[]): RoleTemplateRecord[] {
       recommendedFor: '客服、销售内勤、订单专员',
       securityLevel: 'L3',
       keyPermissions: ['orders.view', 'orders.create', 'settings.master-data'],
+      basedOnRoleName: '客服与销售内勤',
     },
   ];
 
   return templates.map((template) => {
-    const basedOnRole = Array.from(roleByName.values()).find((role) => role.permissionCodes.some((code) => template.keyPermissions.includes(code)));
+    const basedOnRole = template.basedOnRoleName ? roleByName.get(template.basedOnRoleName) : undefined;
     return {
       ...template,
       basedOnRoleId: basedOnRole?.id,

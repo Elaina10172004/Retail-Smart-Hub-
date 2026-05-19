@@ -511,14 +511,15 @@ if /I "%GITHUB_ACTIONS%"=="true" (
   exit /b 0
 )
 
-echo [INFO] Auto mode selected: local environment detected. Switching to desktop start mode.
+set "DEV_MODE=1"
+echo [INFO] Auto mode selected: local environment detected. Switching to desktop development mode.
 exit /b 0
 
 :show_help
 echo Retail Smart Hub one-script launcher
 echo.
 echo Usage:
-echo   start.bat                     ^(auto mode: local=start, CI=release^)
+echo   start.bat                     ^(auto mode: local=dev, CI=release^)
 echo   start.bat --release           ^(local one-click release^)
 echo   start.bat --release-ci        ^(CI release pipeline^)
 echo   start.bat --dev               ^(desktop dev shell^)
@@ -533,7 +534,7 @@ echo Optional env override:
 echo   set RETAIL_HUB_MODE=release      ^(or: release-ci, dev, packaged^)
 echo.
 echo Notes:
-echo   Start means running the app on this machine for development/demo.
+echo   Default local mode uses the desktop dev shell ^(Vite + API + Electron^).
 echo   Release means building distributable desktop artifacts for other machines.
 exit /b 0
 

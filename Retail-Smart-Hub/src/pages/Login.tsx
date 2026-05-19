@@ -1,14 +1,67 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { confirmRecoverPassword, requestRecoverPassword } from '@/services/api/system';
-import { KeyRound, LockKeyhole, LogIn, Package } from 'lucide-react';
+import { KeyRound, LockKeyhole, LogIn, Package, UserCircle2 } from 'lucide-react';
 
 interface LoginProps {
   onLogin: (username: string, password: string) => Promise<void>;
   isLoading: boolean;
 }
+
+interface DemoAccount {
+  role: string;
+  username: string;
+  password: string;
+  department: string;
+  description: string;
+}
+
+const DEMO_ACCOUNTS: DemoAccount[] = [
+  {
+    role: '系统管理员',
+    username: 'admin',
+    password: 'admin',
+    department: '管理部',
+    description: '查看全部模块，维护角色权限、AI 配置和基础资料。',
+  },
+  {
+    role: '运营经理',
+    username: 'ops.chen',
+    password: 'Demo@123',
+    department: '运营部',
+    description: '查看订单与报表，推进履约、库存、采购和发货链路。',
+  },
+  {
+    role: '财务专员',
+    username: 'finance.li',
+    password: 'Demo@123',
+    department: '财务部',
+    description: '查看财务总览，处理应收、应付和对账。',
+  },
+  {
+    role: '仓储主管',
+    username: 'warehouse.zhang',
+    password: 'Demo@123',
+    department: '仓储部',
+    description: '查看库存预警，处理入库、库存和发货执行。',
+  },
+  {
+    role: '采购专员',
+    username: 'buyer.wang',
+    password: 'Demo@123',
+    department: '采购部',
+    description: '管理采购单、到货协同和供应商资料。',
+  },
+  {
+    role: '客服与销售内勤',
+    username: 'service.liu',
+    password: 'Demo@123',
+    department: '客服部',
+    description: '跟进客户、订单和基础资料，适合演示对客场景。',
+  },
+];
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '登录失败，请稍后重试。';
@@ -31,6 +84,12 @@ export function Login({ onLogin, isLoading }: LoginProps) {
     newPassword: '',
     confirmPassword: '',
   });
+
+  const fillDemoAccount = (account: DemoAccount) => {
+    setUsername(account.username);
+    setPassword(account.password);
+    setFormError('');
+  };
 
   const handleSubmit = async () => {
     setFormError('');
@@ -68,7 +127,7 @@ export function Login({ onLogin, isLoading }: LoginProps) {
       if (tokenPreview) {
         setRecoverTokenPreview(tokenPreview);
       }
-      setRecoverMessage(response.message || '重置请求已受理，请使用一次性重置口令完成改密。');
+      setRecoverMessage(response.message || '重置请求已受理，请使用一次性口令完成改密。');
     } catch (error) {
       setRecoverError(getErrorMessage(error));
     } finally {
@@ -105,9 +164,6 @@ export function Login({ onLogin, isLoading }: LoginProps) {
       setRecoverTokenPreview('');
       setRecoverForm((current) => ({
         ...current,
-        username: current.username.trim(),
-        email: current.email.trim(),
-        phone: current.phone.trim(),
         resetToken: '',
         newPassword: '',
         confirmPassword: '',
@@ -121,7 +177,7 @@ export function Login({ onLogin, isLoading }: LoginProps) {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(37,99,235,0.18),_transparent_40%),linear-gradient(135deg,_#f8fafc_0%,_#e2e8f0_100%)] flex items-center justify-center px-4">
-      <div className="grid gap-6 lg:grid-cols-[1.1fr_420px] max-w-6xl w-full">
+      <div className="grid gap-6 lg:grid-cols-[1.12fr_420px] max-w-6xl w-full">
         <div className="hidden lg:flex flex-col justify-center rounded-3xl border border-white/60 bg-white/50 backdrop-blur p-10 shadow-xl">
           <div className="inline-flex items-center gap-3 text-blue-700">
             <div className="h-12 w-12 rounded-2xl bg-blue-100 flex items-center justify-center">
@@ -134,21 +190,32 @@ export function Login({ onLogin, isLoading }: LoginProps) {
           </div>
 
           <div className="mt-8 space-y-4 text-gray-700">
-            <p>当前已接入订单、客户、库存、采购、到货、入库、发货、财务、报表、权限与基础资料模块。</p>
-            <p>系统默认固定账号为 <span className="font-semibold text-gray-900">admin</span>，默认密码为 <span className="font-semibold text-gray-900">admin</span>。</p>
-            <div className="rounded-2xl border border-blue-200 bg-blue-50/80 px-4 py-4">
-              <div className="text-xs uppercase tracking-[0.18em] text-blue-500">默认账号</div>
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                <div>
-                  <div className="text-xs text-gray-500">用户名</div>
-                  <div className="text-sm font-semibold text-gray-900">admin</div>
+            <p>当前演示环境已经接入订单、客户、库存、采购、到货、入库、发货、财务、报表、权限与基础资料模块。</p>
+            <p>下方账号均为演示账号，双击或单击卡片即可自动填充登录表单。</p>
+          </div>
+
+          <div className="mt-8 grid gap-3 md:grid-cols-2">
+            {DEMO_ACCOUNTS.map((account) => (
+              <button
+                key={account.username}
+                type="button"
+                onClick={() => fillDemoAccount(account)}
+                className="rounded-2xl border border-white/50 bg-white/70 px-4 py-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:bg-white"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.18em] text-blue-500">{account.role}</div>
+                    <div className="mt-2 text-lg font-semibold text-gray-900">{account.username}</div>
+                  </div>
+                  <UserCircle2 className="h-5 w-5 text-blue-500" />
                 </div>
-                <div>
-                  <div className="text-xs text-gray-500">密码</div>
-                  <div className="text-sm font-semibold text-gray-900">admin</div>
+                <div className="mt-3 space-y-1 text-sm text-gray-600">
+                  <div>密码：<span className="font-semibold text-gray-900">{account.password}</span></div>
+                  <div>部门：{account.department}</div>
+                  <div>{account.description}</div>
                 </div>
-              </div>
-            </div>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -160,10 +227,29 @@ export function Login({ onLogin, isLoading }: LoginProps) {
             <div>
               <CardTitle className="text-2xl text-gray-900">登录系统</CardTitle>
               <p className="mt-2 text-sm text-gray-500">请输入账号和密码登录系统。</p>
-              <p className="mt-2 text-xs text-blue-600">默认账号：admin / 密码：admin</p>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/80 p-4 lg:hidden">
+              <div className="text-xs uppercase tracking-[0.18em] text-blue-500">演示账号</div>
+              <div className="mt-3 grid gap-3">
+                {DEMO_ACCOUNTS.map((account) => (
+                  <button
+                    key={account.username}
+                    type="button"
+                    onClick={() => fillDemoAccount(account)}
+                    className="rounded-xl border border-blue-100 bg-white px-3 py-3 text-left"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-semibold text-gray-900">{account.username}</div>
+                      <div className="text-xs text-blue-600">{account.role}</div>
+                    </div>
+                    <div className="mt-1 text-sm text-gray-600">密码：{account.password}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="space-y-2">
               <label className="text-sm font-medium text-gray-700">用户名</label>
               <Input
@@ -173,6 +259,7 @@ export function Login({ onLogin, isLoading }: LoginProps) {
                 className="border-gray-300 focus-visible:ring-blue-500"
               />
             </div>
+
             <div className="space-y-2">
               <label className="text-sm font-medium text-gray-700">密码</label>
               <Input
@@ -190,6 +277,10 @@ export function Login({ onLogin, isLoading }: LoginProps) {
               {isLoading ? <LockKeyhole className="mr-2 h-4 w-4 animate-pulse" /> : <LogIn className="mr-2 h-4 w-4" />}
               登录
             </Button>
+
+            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600">
+              演示说明：`admin / admin` 为超管账号，其他演示账号统一使用 `Demo@123`。
+            </div>
 
             <button
               type="button"
@@ -212,7 +303,7 @@ export function Login({ onLogin, isLoading }: LoginProps) {
                 </div>
                 <Input value={recoverForm.username} onChange={(e) => setRecoverForm({ ...recoverForm, username: e.target.value })} placeholder="用户名" />
                 <Input value={recoverForm.email} onChange={(e) => setRecoverForm({ ...recoverForm, email: e.target.value })} placeholder="邮箱" />
-                <Input value={recoverForm.phone} onChange={(e) => setRecoverForm({ ...recoverForm, phone: e.target.value })} placeholder="手机号" />
+                <Input value={recoverForm.phone} onChange={(e) => setRecoverForm({ ...recoverForm, phone: e.target.value })} placeholder="手机号（选填）" />
                 <Input value={recoverForm.resetToken} onChange={(e) => setRecoverForm({ ...recoverForm, resetToken: e.target.value })} placeholder="重置口令" />
                 <Input type="password" value={recoverForm.newPassword} onChange={(e) => setRecoverForm({ ...recoverForm, newPassword: e.target.value })} placeholder="新密码（至少 8 位）" />
                 <Input type="password" value={recoverForm.confirmPassword} onChange={(e) => setRecoverForm({ ...recoverForm, confirmPassword: e.target.value })} placeholder="确认新密码" />

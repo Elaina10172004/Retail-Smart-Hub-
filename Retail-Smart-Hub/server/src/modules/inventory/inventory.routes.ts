@@ -40,7 +40,13 @@ inventoryRouter.get('/shelves', requirePermission('inventory.view'), (_req, res)
 });
 
 inventoryRouter.get('/', requirePermission('inventory.view'), (req, res) => {
-  return ok(res, paginateList(req, () => listInventory(), { searchFields: ['sku', 'name', 'category', 'supplierName'] }));
+  return ok(res, paginateList(req, () => listInventory(), {
+    searchFields: ['id', 'sku', 'name', 'category', 'supplierName', 'shelfSummary'],
+    filters: [
+      { queryKey: 'category', field: 'category' },
+      { queryKey: 'status', field: 'status' },
+    ],
+  }));
 });
 
 inventoryRouter.get('/:sku', requirePermission('inventory.view'), (req, res) => {

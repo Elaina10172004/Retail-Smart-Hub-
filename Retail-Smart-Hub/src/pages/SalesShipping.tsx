@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SearchableSelect } from '@/components/ui/searchable-select';
+import { Pagination } from '@/components/ui/pagination';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { DocumentKpiCard } from '@/components/documents/DocumentKpiCard';
@@ -16,9 +17,12 @@ import { useAuth } from '@/auth/AuthContext';
 import { buildShippingDocument } from '@/lib/documents';
 import { downloadCsv } from '@/lib/export';
 import { matchesSearchQuery } from '@/lib/search';
-import { createShipmentDocument, fetchShipmentDetail, fetchShipments, fetchShippingWorkbench } from '@/services/api/shipping';
+import { createShipmentDocument, fetchShipmentDetail, fetchShipmentsPaginated, fetchShippingWorkbench } from '@/services/api/shipping';
 import type { DocumentPreviewRecord } from '@/types/documents';
+import type { PaginatedData } from '@/types/api';
 import type { CreateShipmentDocumentPayload, ShipmentStockStatus, ShippingDetailRecord, ShippingRecord, ShippingWorkbenchCustomer, ShippingWorkbenchItem, ShippingWorkbenchOrder } from '@/types/shipping';
+
+const PAGE_SIZE = 20;
 
 type SelectedRow = ShippingWorkbenchItem & {
   orderId: string;
@@ -67,12 +71,13 @@ export function SalesShipping() {
   const { hasPermission } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
   const canDispatchShipment = hasPermission('shipping.dispatch');
-  const [shipments, setShipments] = useState<ShippingRecord[]>([]);
+  const [shipmentsData, setShipmentsData] = useState<PaginatedData<ShippingRecord> | null>(null);
   const [workbenchCustomers, setWorkbenchCustomers] = useState<ShippingWorkbenchCustomer[]>([]);
   const [customerFilter, setCustomerFilter] = useState('');
   const [orderSearch, setOrderSearch] = useState('');
   const [historySearch, setHistorySearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [historyPage, setHistoryPage] = useState(1);
   const [isCustomerFilterVisible, setIsCustomerFilterVisible] = useState(false);
   const [expandedOrderIds, setExpandedOrderIds] = useState<string[]>([]);
   const [selectedItems, setSelectedItems] = useState<Record<string, boolean>>({});
@@ -88,6 +93,7 @@ export function SalesShipping() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pageError, setPageError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
+  const shipments = shipmentsData?.items ?? [];
 
   const workbenchOrders = useMemo(() => workbenchCustomers.flatMap((customer) => customer.orders), [workbenchCustomers]);
   const itemMap = useMemo(
@@ -109,11 +115,7 @@ export function SalesShipping() {
       return matchesCustomer && matchesSearch;
     });
   }, [customerFilter, orderSearch, workbenchOrders]);
-  const filteredShipments = useMemo(() => shipments.filter((shipment) => {
-    const matchesSearch = matchesSearchQuery(historySearch, [shipment.id, shipment.customer, ...shipment.orderIds]);
-    const matchesStatus = !statusFilter || shipment.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  }), [historySearch, shipments, statusFilter]);
+  const filteredShipments = shipments;
   const visibleItemIds = useMemo(() => filteredWorkbenchOrders.flatMap((order) => order.items.map((item) => item.orderItemId)), [filteredWorkbenchOrders]);
   const selectedItemIds = useMemo(() => Object.entries(selectedItems).filter(([id, checked]) => checked && itemMap.has(id)).map(([id]) => id), [itemMap, selectedItems]);
   const selectedCustomerNames = useMemo(() => Array.from(new Set(selectedItemIds.map((id) => itemMap.get(id)?.customer).filter(Boolean) as string[])), [itemMap, selectedItemIds]);
@@ -128,8 +130,11 @@ export function SalesShipping() {
     setIsLoading(true);
     setPageError('');
     try {
-      const [shipmentsResponse, workbenchResponse] = await Promise.all([fetchShipments(), fetchShippingWorkbench()]);
-      setShipments(shipmentsResponse.data);
+      const [shipmentsResponse, workbenchResponse] = await Promise.all([
+        fetchShipmentsPaginated({ page: historyPage, pageSize: PAGE_SIZE, search: historySearch, status: statusFilter }),
+        fetchShippingWorkbench(),
+      ]);
+      setShipmentsData(shipmentsResponse.data);
       setWorkbenchCustomers(workbenchResponse.data);
     } catch (error) {
       setPageError(getErrorMessage(error));
@@ -138,7 +143,11 @@ export function SalesShipping() {
     }
   };
 
-  useEffect(() => { void loadShippingHub(); }, []);
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historySearch, statusFilter]);
+
+  useEffect(() => { void loadShippingHub(); }, [historyPage, historySearch, statusFilter]);
 
   const openPreview = (documents: DocumentPreviewRecord[], activeId?: string) => {
     if (documents.length === 0) return;
@@ -435,6 +444,17 @@ export function SalesShipping() {
               {!isLoading && filteredShipments.map((shipment) => <TableRow key={shipment.id} className="transition-colors hover:bg-blue-50/30"><TableCell className="font-medium text-blue-600">{shipment.id}</TableCell><TableCell className="text-gray-900">{shipment.customer}</TableCell><TableCell className="text-gray-500">{shipment.orderIds.join(' / ')}</TableCell><TableCell className="text-center"><Badge variant={shipment.documentScope === '合并发货' ? 'secondary' : 'outline'}>{shipment.documentScope}</Badge></TableCell><TableCell className="text-center"><Badge variant={statusVariant(shipment.status)}>{shipment.status}</Badge></TableCell><TableCell className="text-right font-medium text-gray-900">{shipment.items}</TableCell><TableCell className="text-gray-500">{shipment.createdAt || '-'}</TableCell><TableCell>{shipment.courier !== '-' ? <div className="flex flex-col"><span className="text-sm font-medium text-gray-900">{shipment.courier}</span><span className="text-xs text-gray-500">{shipment.trackingNo}</span></div> : <span className="text-gray-400">-</span>}</TableCell><TableCell className="text-right"><div className="flex justify-end gap-2"><Button variant="ghost" size="sm" onClick={() => void handleViewDetail(shipment.id)}><Eye className="mr-1 h-4 w-4" />查看</Button></div></TableCell></TableRow>)}
             </TableBody>
           </Table>
+          {shipmentsData ? (
+            <div className="border-t border-gray-100 px-4">
+              <Pagination
+                page={shipmentsData.page}
+                totalPages={shipmentsData.totalPages}
+                total={shipmentsData.total}
+                pageSize={shipmentsData.pageSize}
+                onPageChange={setHistoryPage}
+              />
+            </div>
+          ) : null}
       </DocumentRecordTable>
 
       <DocumentPreviewModal documents={previewDocuments} isOpen={isPreviewOpen} initialActiveId={previewInitialId} onClose={() => setIsPreviewOpen(false)} />

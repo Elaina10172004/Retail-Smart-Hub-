@@ -52,3 +52,16 @@ export interface CreateManualArrivalPayload {
 export interface CreateManualArrivalResult {
   arrivalIds: string[];
 }
+
+export interface ForceUpdateArrivalLineItemPayload {
+  itemId: string;
+  expectedQty: number;
+  arrivedQty: number;
+  qualifiedQty: number;
+  defectQty: number;
+}
+
+export interface ForceUpdateArrivalLinesPayload {
+  reason?: string;
+  items: ForceUpdateArrivalLineItemPayload[];
+}

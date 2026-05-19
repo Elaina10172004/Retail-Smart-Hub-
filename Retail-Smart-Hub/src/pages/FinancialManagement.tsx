@@ -5,6 +5,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Pagination } from '@/components/ui/pagination';
+import {
+  EMPTY_RANGE_FILTER,
+  MultiSelectColumnFilter,
+  RangeColumnFilter,
+  buildColumnFilterOptions,
+  isRangeFilterActive,
+  type RangeFilterValue,
+} from '@/components/ui/table-column-filter';
 import { RowActionMenu } from '@/components/RowActionMenu';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
@@ -12,16 +21,16 @@ import { useAuth } from '@/auth/AuthContext';
 import { buildReceivableDocument, buildReceiptDocument } from '@/lib/documents';
 import { downloadCsv } from '@/lib/export';
 import { formatCurrency } from '@/lib/format';
-import { matchesSearchQuery } from '@/lib/search';
 import {
   fetchFinanceOverview,
   fetchPayableDetail,
-  fetchPayables,
+  fetchPayablesPaginated,
   fetchReceivableDetail,
-  fetchReceivables,
+  fetchReceivablesPaginated,
   payPayable,
   receiveReceivable,
 } from '@/services/api/finance';
+import type { PaginatedData } from '@/types/api';
 import type { DocumentPreviewRecord } from '@/types/documents';
 import type {
   FinanceOverview,
@@ -85,6 +94,10 @@ function buildDraftDocumentNo(prefix: string) {
   return `${prefix}-DRAFT-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
 }
 
+const PAGE_SIZE = 20;
+const RECEIVABLE_STATUS_OPTIONS: ReceivableStatus[] = ['未收款', '部分收款', '已收款', '逾期'];
+const PAYABLE_STATUS_OPTIONS: PayableStatus[] = ['未付款', '部分付款', '已付款', '逾期'];
+
 export function FinancialManagement() {
   const { hasPermission } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -92,8 +105,8 @@ export function FinancialManagement() {
   const canPay = hasPermission('finance.payable');
   const [activeTab, setActiveTab] = useState<'receivables' | 'payables'>('receivables');
   const [overview, setOverview] = useState<FinanceOverview | null>(null);
-  const [receivables, setReceivables] = useState<ReceivableRecord[]>([]);
-  const [payables, setPayables] = useState<PayableRecord[]>([]);
+  const [receivablesData, setReceivablesData] = useState<PaginatedData<ReceivableRecord> | null>(null);
+  const [payablesData, setPayablesData] = useState<PaginatedData<PayableRecord> | null>(null);
   const [selectedReceivable, setSelectedReceivable] = useState<ReceivableDetailRecord | null>(null);
   const [selectedPayable, setSelectedPayable] = useState<PayableDetailRecord | null>(null);
   const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft>(createReceiptDraft());
@@ -105,32 +118,37 @@ export function FinancialManagement() {
   const [previewInitialId, setPreviewInitialId] = useState('');
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  const [partyFilter, setPartyFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [dueDateFilter, setDueDateFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
+  const [amountFilter, setAmountFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
+  const [remainingFilter, setRemainingFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
+  const [currentPage, setCurrentPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [activeId, setActiveId] = useState('');
   const [pageError, setPageError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
+  const receivables = receivablesData?.items ?? [];
+  const payables = payablesData?.items ?? [];
+  const activePageData = activeTab === 'receivables' ? receivablesData : payablesData;
 
-  const filteredReceivables = useMemo(
-    () =>
-      receivables.filter((item) => {
-        const matchesSearch = matchesSearchQuery(searchTerm, [item.id, item.orderId, item.customer]);
-        const matchesStatus = !statusFilter || item.status === statusFilter;
-        return matchesSearch && matchesStatus;
-      }),
-    [receivables, searchTerm, statusFilter],
+  const filteredReceivables = receivables;
+  const filteredPayables = payables;
+  const partyFilterOptions = useMemo(
+    () => buildColumnFilterOptions(activeTab === 'receivables' ? receivables.map((item) => item.customer) : payables.map((item) => item.supplier)),
+    [activeTab, payables, receivables],
   );
-
-  const filteredPayables = useMemo(
-    () =>
-      payables.filter((item) => {
-        const matchesSearch = matchesSearchQuery(searchTerm, [item.id, item.purchaseOrderId, item.supplier]);
-        const matchesStatus = !statusFilter || item.status === statusFilter;
-        return matchesSearch && matchesStatus;
-      }),
-    [payables, searchTerm, statusFilter],
+  const statusFilterOptions = useMemo(
+    () => (activeTab === 'receivables' ? RECEIVABLE_STATUS_OPTIONS : PAYABLE_STATUS_OPTIONS).map((status) => ({ value: status, label: status })),
+    [activeTab],
   );
+  const hasColumnFilters =
+    partyFilter.length > 0 ||
+    statusFilter.length > 0 ||
+    isRangeFilterActive(dueDateFilter) ||
+    isRangeFilterActive(amountFilter) ||
+    isRangeFilterActive(remainingFilter);
 
   const pendingReceivables = useMemo(
     () => receivables.filter((item) => item.remainingAmount > 0),
@@ -146,14 +164,36 @@ export function FinancialManagement() {
     setIsLoading(true);
     setPageError('');
     try {
+      const rangeParams = {
+        dueDateFrom: dueDateFilter.min,
+        dueDateTo: dueDateFilter.max,
+        amountMin: amountFilter.min,
+        amountMax: amountFilter.max,
+        remainingMin: remainingFilter.min,
+        remainingMax: remainingFilter.max,
+      };
       const [overviewResponse, receivableResponse, payableResponse] = await Promise.all([
         fetchFinanceOverview(),
-        fetchReceivables(),
-        fetchPayables(),
+        fetchReceivablesPaginated({
+          page: currentPage,
+          pageSize: PAGE_SIZE,
+          search: searchTerm,
+          ...rangeParams,
+          customer: activeTab === 'receivables' ? partyFilter.join(',') || undefined : undefined,
+          status: activeTab === 'receivables' ? statusFilter.join(',') || undefined : undefined,
+        }),
+        fetchPayablesPaginated({
+          page: currentPage,
+          pageSize: PAGE_SIZE,
+          search: searchTerm,
+          ...rangeParams,
+          supplier: activeTab === 'payables' ? partyFilter.join(',') || undefined : undefined,
+          status: activeTab === 'payables' ? statusFilter.join(',') || undefined : undefined,
+        }),
       ]);
       setOverview(overviewResponse.data);
-      setReceivables(receivableResponse.data);
-      setPayables(payableResponse.data);
+      setReceivablesData(receivableResponse.data);
+      setPayablesData(payableResponse.data);
 
       if (options?.keepReceivableId) {
         const detailResponse = await fetchReceivableDetail(options.keepReceivableId);
@@ -171,8 +211,12 @@ export function FinancialManagement() {
   };
 
   useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, searchTerm, partyFilter, statusFilter, dueDateFilter, amountFilter, remainingFilter]);
+
+  useEffect(() => {
     void loadFinance();
-  }, []);
+  }, [currentPage, activeTab, searchTerm, partyFilter, statusFilter, dueDateFilter, amountFilter, remainingFilter]);
 
   const openPreview = (documents: DocumentPreviewRecord[], activeDocumentId?: string) => {
     if (documents.length === 0) {
@@ -351,6 +395,25 @@ export function FinancialManagement() {
     }
   };
 
+  const resetFinanceColumnFilters = () => {
+    setSearchTerm('');
+    setPartyFilter([]);
+    setStatusFilter([]);
+    setDueDateFilter(EMPTY_RANGE_FILTER);
+    setAmountFilter(EMPTY_RANGE_FILTER);
+    setRemainingFilter(EMPTY_RANGE_FILTER);
+    setCurrentPage(1);
+  };
+
+  const handleSwitchTab = (tab: 'receivables' | 'payables') => {
+    setActiveTab(tab);
+    setPartyFilter([]);
+    setStatusFilter([]);
+    setDueDateFilter(EMPTY_RANGE_FILTER);
+    setAmountFilter(EMPTY_RANGE_FILTER);
+    setRemainingFilter(EMPTY_RANGE_FILTER);
+  };
+
   const handleExportCurrentTab = () => {
     if (activeTab === 'receivables') {
       downloadCsv(
@@ -387,9 +450,6 @@ export function FinancialManagement() {
     );
     setActionMessage(`已导出 ${filteredPayables.length} 条应付记录。`);
   };
-
-  const receivableStatusOptions: ReceivableStatus[] = ['未收款', '部分收款', '已收款', '逾期'];
-  const payableStatusOptions: PayableStatus[] = ['未付款', '部分付款', '已付款', '逾期'];
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -589,10 +649,10 @@ export function FinancialManagement() {
         <CardHeader className="rounded-t-xl border-b border-gray-100 bg-gray-50/50 pb-3">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex flex-wrap gap-2">
-              <Button variant={activeTab === 'receivables' ? 'default' : 'outline'} onClick={() => { setActiveTab('receivables'); setStatusFilter(''); }}>
+              <Button variant={activeTab === 'receivables' ? 'default' : 'outline'} onClick={() => handleSwitchTab('receivables')}>
                 应收列表
               </Button>
-              <Button variant={activeTab === 'payables' ? 'default' : 'outline'} onClick={() => { setActiveTab('payables'); setStatusFilter(''); }}>
+              <Button variant={activeTab === 'payables' ? 'default' : 'outline'} onClick={() => handleSwitchTab('payables')}>
                 应付列表
               </Button>
             </div>
@@ -605,17 +665,16 @@ export function FinancialManagement() {
                   onChange={(event) => setSearchTerm(event.target.value)}
                 />
               </div>
-              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">所有状态</option>
-                {(activeTab === 'receivables' ? receivableStatusOptions : payableStatusOptions).map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
+              <Button variant="outline" className="border-gray-300 text-gray-700 hover:bg-gray-50" onClick={resetFinanceColumnFilters} disabled={!searchTerm && !hasColumnFilters}>
+                重置筛选
+              </Button>
             </div>
           </div>
         </CardHeader>
         <CardContent className="p-0">
           {activeTab === 'receivables' ? (
             <Table>
-              <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">应收单号</TableHead><TableHead className="font-semibold text-gray-900">关联订单</TableHead><TableHead className="font-semibold text-gray-900">客户</TableHead><TableHead className="font-semibold text-gray-900 text-right">应收金额</TableHead><TableHead className="font-semibold text-gray-900 text-right">待收金额</TableHead><TableHead className="font-semibold text-gray-900">到期日</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">应收单号</TableHead><TableHead className="font-semibold text-gray-900">关联订单</TableHead><TableHead className="font-semibold text-gray-900"><MultiSelectColumnFilter label="客户" options={partyFilterOptions} selectedValues={partyFilter} onChange={setPartyFilter} /></TableHead><TableHead className="font-semibold text-gray-900 text-right"><RangeColumnFilter label="应收金额" value={amountFilter} onChange={setAmountFilter} minPlaceholder="最小金额" maxPlaceholder="最大金额" /></TableHead><TableHead className="font-semibold text-gray-900 text-right"><RangeColumnFilter label="待收金额" value={remainingFilter} onChange={setRemainingFilter} minPlaceholder="最小金额" maxPlaceholder="最大金额" /></TableHead><TableHead className="font-semibold text-gray-900"><RangeColumnFilter label="到期日" inputType="date" value={dueDateFilter} onChange={setDueDateFilter} minPlaceholder="开始日期" maxPlaceholder="结束日期" /></TableHead><TableHead className="font-semibold text-gray-900 text-center"><MultiSelectColumnFilter label="状态" options={statusFilterOptions} selectedValues={statusFilter} onChange={setStatusFilter} /></TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
               <TableBody>
                 {isLoading ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载应收数据...</TableCell></TableRow> : null}
                 {!isLoading && filteredReceivables.length === 0 ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有应收记录。</TableCell></TableRow> : null}
@@ -648,7 +707,7 @@ export function FinancialManagement() {
             </Table>
           ) : (
             <Table>
-              <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">应付单号</TableHead><TableHead className="font-semibold text-gray-900">关联采购单</TableHead><TableHead className="font-semibold text-gray-900">供应商</TableHead><TableHead className="font-semibold text-gray-900 text-right">应付金额</TableHead><TableHead className="font-semibold text-gray-900 text-right">待付金额</TableHead><TableHead className="font-semibold text-gray-900">到期日</TableHead><TableHead className="font-semibold text-gray-900 text-center">状态</TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow className="bg-gray-50/50 hover:bg-gray-50/50"><TableHead className="font-semibold text-gray-900">应付单号</TableHead><TableHead className="font-semibold text-gray-900">关联采购单</TableHead><TableHead className="font-semibold text-gray-900"><MultiSelectColumnFilter label="供应商" options={partyFilterOptions} selectedValues={partyFilter} onChange={setPartyFilter} /></TableHead><TableHead className="font-semibold text-gray-900 text-right"><RangeColumnFilter label="应付金额" value={amountFilter} onChange={setAmountFilter} minPlaceholder="最小金额" maxPlaceholder="最大金额" /></TableHead><TableHead className="font-semibold text-gray-900 text-right"><RangeColumnFilter label="待付金额" value={remainingFilter} onChange={setRemainingFilter} minPlaceholder="最小金额" maxPlaceholder="最大金额" /></TableHead><TableHead className="font-semibold text-gray-900"><RangeColumnFilter label="到期日" inputType="date" value={dueDateFilter} onChange={setDueDateFilter} minPlaceholder="开始日期" maxPlaceholder="结束日期" /></TableHead><TableHead className="font-semibold text-gray-900 text-center"><MultiSelectColumnFilter label="状态" options={statusFilterOptions} selectedValues={statusFilter} onChange={setStatusFilter} /></TableHead><TableHead className="text-right font-semibold text-gray-900">操作</TableHead></TableRow></TableHeader>
               <TableBody>
                 {isLoading ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">正在加载应付数据...</TableCell></TableRow> : null}
                 {!isLoading && filteredPayables.length === 0 ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-gray-500">当前筛选条件下没有应付记录。</TableCell></TableRow> : null}
@@ -679,6 +738,17 @@ export function FinancialManagement() {
               </TableBody>
             </Table>
           )}
+          {activePageData ? (
+            <div className="border-t border-gray-100 px-4">
+              <Pagination
+                page={activePageData.page}
+                totalPages={activePageData.totalPages}
+                total={activePageData.total}
+                pageSize={activePageData.pageSize}
+                onPageChange={setCurrentPage}
+              />
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

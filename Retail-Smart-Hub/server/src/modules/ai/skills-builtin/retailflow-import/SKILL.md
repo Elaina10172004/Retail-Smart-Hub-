@@ -1,36 +1,19 @@
 ---
 name: RetailFlow Import
 description: 处理图片、文档、表格附件导入。先抽取字段，再校验主数据，再进入正常 ReAct 流程决定是否追问用户或创建待确认业务动作。
-triggers:
-  - 导入
-  - 附件
-  - 图片
-  - 截图
-  - OCR
-  - 采购单
-  - 订单
-  - 发货单
-  - 入库单
-  - 验收单
-  - 表格
-  - excel
-  - csv
-tools:
-  - get_master_data_overview
-  - create_supplier_profile
-  - create_procurement_order
-  - create_sales_order
-  - get_procurement_detail
-  - get_order_detail
-  - query_inventory_item
-enabled: true
 ---
 
-适用任务
+## Runtime Metadata
+
+- Triggers: 导入, 附件, 图片, 截图, OCR, 采购单, 订单, 发货单, 入库单, 验收单, 表格, excel, csv
+- Recommended tools: get_master_data_overview, create_supplier_profile, create_procurement_order, create_sales_order, get_procurement_detail, get_order_detail, query_inventory_item
+- Enabled: true
+
+## 适用任务
 1. 用户上传图片、扫描件、截图、Markdown、PDF、Excel、CSV，并要求识别或导入单据。
 2. 用户希望从非结构化附件中生成采购单、订单或待确认动作。
 
-执行规则
+## 执行规则
 1. 先判断附件类型：图片单据、文本单据、表格单据。
 2. 只提取真正看见或读到的字段；看不清就说不确定，不允许模拟 OCR 或补造字段。
 3. 图片只是正常 agent 流程前的预处理步骤，不要把图片识别结果直接当成最终业务执行依据。
@@ -55,5 +38,5 @@ enabled: true
    - 采购单场景：只需要 `costPrice`（进货价）。**不要追问销售价（salePrice）**，销售价在创建销售单时再填。
    - 销售单场景：只需要 `salePrice`（销售价）。不要追问进货价。
    - 图片中识别到的单价默认作为对应场景的价格字段，未识别到的不要编造或追问。
-   - 除非图片明确标注了"销售价"或"进货价"标签，否则按上述场景规则处理。
+   - 除非图片明确标注了“销售价”或“进货价”标签，否则按上述场景规则处理。
 14. 采购导入中，如果供应商已经存在或已经确认新建，且用户选择“新建商品”，优先直接调用 `create_procurement_order`，在采购单明细中传入 `productName`、`quantity`、`unitCost`、`unit` 等字段；不要额外逐个调用 `create_product_master_data`。

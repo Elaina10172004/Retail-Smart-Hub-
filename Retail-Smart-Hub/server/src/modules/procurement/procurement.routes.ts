@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requirePermission } from '../../shared/auth';
+import { requirePermission, requireSuperAdmin } from '../../shared/auth';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
 import { fail, ok } from '../../shared/response';
 import { paginateList } from '../../shared/paginate';
@@ -7,6 +7,7 @@ import { getProcurementArrivalWorkspace, registerProcurementArrival } from '../a
 import {
   createProcurementOrder,
   deleteProcurementOrder,
+  forceUpdateProcurementOrderLines,
   generateSuggestedPurchaseOrders,
   getProcurementFormOptions,
   getProcurementOrderDetail,
@@ -37,7 +38,18 @@ procurementRouter.get('/form-options', requirePermission('procurement.manage'), 
 });
 
 procurementRouter.get('/', requirePermission('procurement.manage'), (req, res) => {
-  return ok(res, paginateList(req, () => listProcurementOrders(), { searchFields: ['id', 'supplier', 'status'] }));
+  return ok(res, paginateList(req, () => listProcurementOrders(), {
+    searchFields: ['id', 'supplier', 'status'],
+    filters: [
+      { queryKey: 'supplier', field: 'supplier' },
+      { queryKey: 'status', field: 'status' },
+    ],
+    rangeFilters: [
+      { minKey: 'createDateFrom', maxKey: 'createDateTo', field: 'createDate', type: 'date' },
+      { minKey: 'expectedDateFrom', maxKey: 'expectedDateTo', field: 'expectedDate', type: 'date' },
+      { minKey: 'amountMin', maxKey: 'amountMax', field: 'amount', type: 'number' },
+    ],
+  }));
 });
 
 procurementRouter.post('/', requirePermission('procurement.manage'), (req, res) => {
@@ -96,6 +108,15 @@ procurementRouter.post('/:id/status', requirePermission('procurement.manage'), (
     return ok(res, detail, '采购单状态已更新。');
   } catch (error) {
     return fail(res, 400, error instanceof Error ? error.message : 'Update procurement status failed');
+  }
+});
+
+procurementRouter.post('/:id/lines/force', requirePermission('procurement.manage'), requireSuperAdmin, (req, res) => {
+  try {
+    const detail = forceUpdateProcurementOrderLines(req.params.id, req.body);
+    return ok(res, detail, '采购单明细已强制修正。');
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Force update procurement lines failed');
   }
 });
 

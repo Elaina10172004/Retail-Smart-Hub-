@@ -6,20 +6,21 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useConfirmDialog } from '@/components/ui/use-confirm-dialog';
 import { RowActionMenu } from '@/components/RowActionMenu';
+import { Pagination } from '@/components/ui/pagination';
 import { useAuth } from '@/auth/AuthContext';
 import { formatCurrency } from '@/lib/format';
 import { parseImportFile } from '@/lib/import';
-import { matchesSearchQuery } from '@/lib/search';
 import {
   createCustomer,
   deleteCustomer,
   fetchCustomerDetail,
-  fetchCustomers,
+  fetchCustomersPaginated,
   fetchCustomerSummary,
   importCustomers as importCustomersBatch,
   toggleCustomerStatus,
   updateCustomer,
 } from '@/services/api/customers';
+import type { PaginatedData } from '@/types/api';
 import type { CreateCustomerPayload, CustomerDetailRecord, CustomerRecord, CustomerSummary, UpdateCustomerPayload } from '@/types/customers';
 import type { ImportBatchResult } from '@/types/import';
 import { Eye, Filter, LoaderCircle, Pencil, Plus, Power, RefreshCw, Search, Trash2, Upload, Users, X } from 'lucide-react';
@@ -36,15 +37,18 @@ const defaultForm: UpdateCustomerPayload = {
   phone: '',
 };
 
+const PAGE_SIZE = 20;
+
 export function CustomerProfiles() {
   const { hasPermission } = useAuth();
   const { confirm, confirmDialog } = useConfirmDialog();
   const canManageCustomers = hasPermission('settings.master-data');
   const [summary, setSummary] = useState<CustomerSummary | null>(null);
-  const [customers, setCustomers] = useState<CustomerRecord[]>([]);
+  const [customersData, setCustomersData] = useState<PaginatedData<CustomerRecord> | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pageError, setPageError] = useState('');
@@ -59,21 +63,8 @@ export function CustomerProfiles() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const isEditing = Boolean(editingCustomerId);
-
-  const filteredCustomers = useMemo(() => {
-    return customers.filter((item) => {
-      const matchesSearch = matchesSearchQuery(searchTerm, [
-        item.id,
-        item.name,
-        item.channelPreference,
-        item.contactName,
-        item.phone,
-      ]);
-      const matchesStatus = !statusFilter || item.status === statusFilter;
-      const matchesType = !typeFilter || item.customerType === typeFilter;
-      return matchesSearch && matchesStatus && matchesType;
-    });
-  }, [customers, searchTerm, statusFilter, typeFilter]);
+  const customers = customersData?.items ?? [];
+  const filteredCustomers = customers;
 
   const resetForm = () => {
     setForm(defaultForm);
@@ -85,9 +76,18 @@ export function CustomerProfiles() {
     setPageError('');
 
     try {
-      const [summaryResponse, customersResponse] = await Promise.all([fetchCustomerSummary(), fetchCustomers()]);
+      const [summaryResponse, customersResponse] = await Promise.all([
+        fetchCustomerSummary(),
+        fetchCustomersPaginated({
+          page: currentPage,
+          pageSize: PAGE_SIZE,
+          search: searchTerm,
+          status: statusFilter,
+          customerType: typeFilter,
+        }),
+      ]);
       setSummary(summaryResponse.data);
-      setCustomers(customersResponse.data);
+      setCustomersData(customersResponse.data);
     } catch (error) {
       setPageError(getErrorMessage(error));
     } finally {
@@ -96,8 +96,12 @@ export function CustomerProfiles() {
   };
 
   useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, typeFilter]);
+
+  useEffect(() => {
     void loadCustomers();
-  }, []);
+  }, [currentPage, searchTerm, statusFilter, typeFilter]);
 
   const handleSubmitCustomer = async () => {
     if (!canManageCustomers) {
@@ -626,6 +630,17 @@ export function CustomerProfiles() {
                 ))}
             </TableBody>
           </Table>
+          {customersData ? (
+            <div className="border-t border-gray-100 px-4">
+              <Pagination
+                page={customersData.page}
+                totalPages={customersData.totalPages}
+                total={customersData.total}
+                pageSize={customersData.pageSize}
+                onPageChange={setCurrentPage}
+              />
+            </div>
+          ) : null}
         </CardContent>
       </Card>
       {confirmDialog}

@@ -1,42 +1,13 @@
 ---
 name: RetailFlow Analysis
 description: 处理业务问答、仪表盘分析、状态解释、规则说明和结果核对；默认作为读侧兜底技能。
-triggers:
-  - 分析
-  - 查询
-  - 解释
-  - 仪表盘
-  - 报表
-  - 库存
-  - 财务
-  - 状态
-  - why
-  - analyze
-  - 怎么
-  - 如何
-  - 流程
-  - 规则
-tools:
-  - get_dashboard_overview
-  - get_order_detail
-  - get_procurement_detail
-  - query_inventory_item
-  - list_inventory_alerts
-  - get_finance_overview
-  - list_receivables
-  - list_payables
-  - list_customers
-  - get_customer_summary
-  - get_reports_overview
-  - get_master_data_overview
-  - list_arrivals
-  - get_arrival_detail
-  - list_inbounds
-  - get_inbound_detail
-  - list_shipments
-  - get_shipment_detail
-enabled: true
 ---
+
+## Runtime Metadata
+
+- Triggers: 分析, 查询, 解释, 仪表盘, 报表, 库存, 财务, 状态, why, analyze, 怎么, 如何, 流程, 规则
+- Recommended tools: get_dashboard_overview, get_order_detail, get_procurement_detail, query_inventory_item, list_inventory_alerts, get_finance_overview, list_receivables, list_payables, list_customers, get_customer_summary, get_reports_overview, get_master_data_overview, list_arrivals, get_arrival_detail, list_inbounds, get_inbound_detail, list_shipments, get_shipment_detail
+- Enabled: true
 
 ## 适用任务
 

@@ -88,6 +88,19 @@ export interface RegisterProcurementArrivalPayload {
   items: RegisterProcurementArrivalItemPayload[];
 }
 
+export interface ForceUpdateArrivalLineItemPayload {
+  itemId: string;
+  expectedQty: number;
+  arrivedQty: number;
+  qualifiedQty: number;
+  defectQty: number;
+}
+
+export interface ForceUpdateArrivalLinesPayload {
+  reason?: string;
+  items: ForceUpdateArrivalLineItemPayload[];
+}
+
 interface ArrivalRow extends ArrivalRecord {
   supplierId: string;
   arrivedAt: string;
@@ -831,6 +844,156 @@ function upsertInbound(receivingNoteId: string, inboundQty: number) {
     'INSERT INTO inbound_orders (id, receiving_note_id, warehouse_id, inbound_qty, status, completed_at) VALUES (?, ?, ?, ?, ?, ?)',
   ).run(inboundId, receivingNoteId, DEFAULT_WAREHOUSE_ID, inboundQty, '待入库', null);
   return inboundId;
+}
+
+function refreshPurchaseItemArrivedQuantity(purchaseOrderItemId: string) {
+  const nextArrivedQty =
+    db.prepare<{ arrivedQty: number }>(`
+      SELECT COALESCE(MAX(CASE WHEN qualified_qty > 0 THEN qualified_qty ELSE arrived_qty END), 0) as arrivedQty
+      FROM receiving_note_items
+      WHERE purchase_order_item_id = ?
+    `).get(purchaseOrderItemId)?.arrivedQty ?? 0;
+
+  db.prepare('UPDATE purchase_order_items SET arrived_qty = ? WHERE id = ?').run(nextArrivedQty, purchaseOrderItemId);
+}
+
+function refreshReceivingNoteAfterForce(receivingNoteId: string) {
+  const totals =
+    db.prepare<{ expectedQty: number; arrivedQty: number; qualifiedQty: number; defectQty: number }>(`
+      SELECT
+        COALESCE(SUM(expected_qty), 0) as expectedQty,
+        COALESCE(SUM(arrived_qty), 0) as arrivedQty,
+        COALESCE(SUM(qualified_qty), 0) as qualifiedQty,
+        COALESCE(SUM(defect_qty), 0) as defectQty
+      FROM receiving_note_items
+      WHERE receiving_note_id = ?
+    `).get(receivingNoteId) ?? { expectedQty: 0, arrivedQty: 0, qualifiedQty: 0, defectQty: 0 };
+  const inbound = db
+    .prepare<{ id: string; status: string }>('SELECT id, status FROM inbound_orders WHERE receiving_note_id = ?')
+    .get(receivingNoteId);
+
+  if (inbound?.status === ARRIVAL_STATUS_INBOUND_DONE) {
+    db.prepare(
+      'UPDATE receiving_notes SET expected_qty = ?, arrived_qty = ?, qualified_qty = ?, defect_qty = ?, status = ? WHERE id = ?',
+    ).run(
+      totals.expectedQty,
+      totals.arrivedQty,
+      totals.qualifiedQty,
+      totals.defectQty,
+      ARRIVAL_STATUS_INBOUND_DONE,
+      receivingNoteId,
+    );
+    return;
+  }
+
+  if (totals.arrivedQty > 0 && totals.qualifiedQty >= totals.arrivedQty) {
+    db.prepare(
+      'UPDATE receiving_notes SET expected_qty = ?, arrived_qty = ?, qualified_qty = ?, defect_qty = ?, status = ? WHERE id = ?',
+    ).run(
+      totals.expectedQty,
+      totals.arrivedQty,
+      totals.qualifiedQty,
+      totals.defectQty,
+      ARRIVAL_STATUS_PENDING_INBOUND,
+      receivingNoteId,
+    );
+    upsertInbound(receivingNoteId, totals.qualifiedQty);
+    return;
+  }
+
+  db.prepare(
+    'UPDATE receiving_notes SET expected_qty = ?, arrived_qty = ?, qualified_qty = ?, defect_qty = ?, status = ? WHERE id = ?',
+  ).run(totals.expectedQty, totals.arrivedQty, totals.qualifiedQty, totals.defectQty, ARRIVAL_STATUS_PENDING, receivingNoteId);
+  db.prepare('DELETE FROM inbound_orders WHERE receiving_note_id = ? AND status <> ?').run(receivingNoteId, ARRIVAL_STATUS_INBOUND_DONE);
+}
+
+export function forceUpdateArrivalLines(arrivalId: string, payload: ForceUpdateArrivalLinesPayload) {
+  const arrival = loadArrival(arrivalId);
+  if (!arrival) {
+    throw new Error('Arrival record not found');
+  }
+  if (!Array.isArray(payload.items) || payload.items.length === 0) {
+    throw new Error('items are required');
+  }
+
+  const currentItems = loadArrivalItems(arrivalId);
+  const itemMap = new Map(currentItems.map((item) => [item.id, item]));
+  const seenItemIds = new Set<string>();
+  const normalizedItems = payload.items.map((item, index) => {
+    const itemId = String(item.itemId || '').trim();
+    const expectedQty = Number(item.expectedQty);
+    const arrivedQty = Number(item.arrivedQty);
+    const qualifiedQty = Number(item.qualifiedQty);
+    const defectQty = Number(item.defectQty);
+
+    if (!itemId) {
+      throw new Error(`items[${index}].itemId is required`);
+    }
+    if (seenItemIds.has(itemId)) {
+      throw new Error(`Duplicate arrival item ${itemId}`);
+    }
+    const currentItem = itemMap.get(itemId);
+    if (!currentItem) {
+      throw new Error(`Arrival item ${itemId} does not belong to ${arrivalId}`);
+    }
+    if (!Number.isInteger(expectedQty) || expectedQty < 0) {
+      throw new Error(`items[${index}].expectedQty must be a non-negative integer`);
+    }
+    if (!Number.isInteger(arrivedQty) || arrivedQty < 0 || arrivedQty > expectedQty) {
+      throw new Error(`items[${index}].arrivedQty must be between 0 and expectedQty`);
+    }
+    if (!Number.isInteger(qualifiedQty) || qualifiedQty < 0 || qualifiedQty > arrivedQty) {
+      throw new Error(`items[${index}].qualifiedQty must be between 0 and arrivedQty`);
+    }
+    if (!Number.isInteger(defectQty) || defectQty < 0 || qualifiedQty + defectQty > arrivedQty) {
+      throw new Error(`items[${index}].defectQty is invalid`);
+    }
+
+    const inboundQty =
+      db.prepare<{ inboundQty: number }>('SELECT inbound_qty as inboundQty FROM receiving_note_items WHERE id = ?').get(itemId)
+        ?.inboundQty ?? 0;
+    if (qualifiedQty < inboundQty) {
+      throw new Error(`验收明细 ${itemId} 已有 ${inboundQty} 件入库数量，合格数量不能低于该值。`);
+    }
+
+    seenItemIds.add(itemId);
+    return {
+      itemId,
+      expectedQty,
+      arrivedQty,
+      qualifiedQty,
+      defectQty,
+      purchaseOrderItemId: currentItem.purchaseOrderItemId,
+      previousExpectedQty: currentItem.expectedQty,
+      previousArrivedQty: currentItem.arrivedQty,
+      previousQualifiedQty: currentItem.qualifiedQty,
+      previousDefectQty: currentItem.defectQty,
+    };
+  });
+
+  const reason = String(payload.reason || '').trim() || '管理员强制修正验收明细';
+  const updateItem = db.prepare(
+    'UPDATE receiving_note_items SET expected_qty = ?, arrived_qty = ?, qualified_qty = ?, defect_qty = ? WHERE id = ?',
+  );
+
+  const transaction = db.transaction(() => {
+    normalizedItems.forEach((item) => {
+      updateItem.run(item.expectedQty, item.arrivedQty, item.qualifiedQty, item.defectQty, item.itemId);
+      refreshPurchaseItemArrivedQuantity(item.purchaseOrderItemId);
+    });
+
+    refreshReceivingNoteAfterForce(arrivalId);
+    recalculatePurchaseOrdersForReceivingNote(arrivalId);
+
+    appendAuditLog('force_update_arrival_lines', 'receiving_note', arrivalId, {
+      reason,
+      itemCount: normalizedItems.length,
+      items: normalizedItems,
+    });
+  });
+
+  transaction();
+  return getArrivalDetail(arrivalId) as ArrivalDetailRecord;
 }
 
 export function advanceArrival(arrivalId: string) {

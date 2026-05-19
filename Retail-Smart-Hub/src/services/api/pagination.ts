@@ -1,6 +1,12 @@
 import type { ApiEnvelope, PaginatedData } from '@/types/api';
 
 export type MaybePaginated<T> = T[] | PaginatedData<T>;
+export type PageQueryParams = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  [key: string]: string | number | boolean | undefined;
+};
 
 export function unwrapPaginatedData<T>(data: MaybePaginated<T>): T[] {
   return Array.isArray(data) ? data : data.items;
@@ -11,13 +17,18 @@ export function unwrapPaginatedEnvelope<T>(response: ApiEnvelope<MaybePaginated<
 }
 
 /** Build query string for paginated list requests. */
-export function pageQuery(params?: { page?: number; pageSize?: number; search?: string }) {
+export function pageQuery(params?: PageQueryParams) {
   const qs = new URLSearchParams();
   const p = params?.page;
   const ps = params?.pageSize;
   if (p != null && p > 0) qs.set('page', String(p));
   if (ps != null && ps > 0) qs.set('pageSize', String(ps));
   if (params?.search) qs.set('search', params.search);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (key === 'page' || key === 'pageSize' || key === 'search') return;
+    if (value === undefined || value === null || value === '') return;
+    qs.set(key, String(value));
+  });
   const query = qs.toString();
   return query ? `?${query}` : '';
 }
@@ -25,7 +36,7 @@ export function pageQuery(params?: { page?: number; pageSize?: number; search?: 
 /** Fetch a paginated list, returning the full PaginatedData for use with <Pagination>. */
 export async function fetchPaginated<T>(
   path: string,
-  params?: { page?: number; pageSize?: number; search?: string },
+  params?: PageQueryParams,
 ): Promise<ApiEnvelope<PaginatedData<T>>> {
   const { apiClient } = await import('./client');
   return apiClient.get<ApiEnvelope<PaginatedData<T>>>(`${path}${pageQuery(params)}`);

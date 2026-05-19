@@ -3,15 +3,13 @@ import asyncio, json, os, sys
 from pathlib import Path
 _AGENT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENT_DIR))
-os.environ['AI_SMALL_PROVIDER'] = 'openai'
-os.environ['AI_SMALL_BASE_URL'] = 'https://api.gemai.cc/v1'
-os.environ['AI_SMALL_API_KEY'] = 'sk-REDACTED'
-os.environ['AI_SMALL_MODEL'] = '[官]gemini-2.5-flash-image'
-os.environ['DEEPSEEK_API_KEY'] = 'sk-REDACTED'
-os.environ['AI_PROVIDER'] = 'deepseek'
-os.environ['AI_LARGE_MODEL'] = 'deepseek-v4-flash'
-os.environ['AI_MODEL_IO_CONSOLE_LOG'] = 'false'
-os.environ['RAG_LANCEDB_ENABLED'] = 'false'
+os.environ.setdefault('AI_SMALL_PROVIDER', 'gemini')
+os.environ.setdefault('AI_SMALL_MODEL', 'gemini-2.5-flash')
+os.environ.setdefault('AI_PROVIDER', 'gemini')
+os.environ.setdefault('AI_LARGE_PROVIDER', 'gemini')
+os.environ.setdefault('AI_LARGE_MODEL', 'gemini-2.5-flash')
+os.environ.setdefault('AI_MODEL_IO_CONSOLE_LOG', 'false')
+os.environ.setdefault('RAG_LANCEDB_ENABLED', 'false')
 from app.common import AgentConfig
 from app.models import ChatRequest
 from app.node_bridge import NodeToolBridge

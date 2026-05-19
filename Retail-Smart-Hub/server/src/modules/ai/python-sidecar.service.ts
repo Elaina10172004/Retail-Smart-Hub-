@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { env } from '../../config/env';
 import { resolveWorkspaceRoot } from './workspace-root';
 
@@ -10,6 +11,7 @@ let sidecarReady = false;
 let pythonDepsChecked = false;
 let pythonStdoutBuffer = '';
 let pythonStderrBuffer = '';
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const PYTHON_DEPENDENCY_CHECK_SCRIPT =
   "import fastapi,uvicorn,pydantic,lancedb; from fastapi import FastAPI; FastAPI(title='dependency-check')";
 
@@ -24,7 +26,7 @@ function resolvePythonEntry() {
 
   const candidates = [
     path.resolve(process.cwd(), 'python-agent', 'main.py'),
-    path.resolve(__dirname, '../../../../python-agent/main.py'),
+    path.resolve(moduleDir, '../../../../python-agent/main.py'),
     path.resolve(path.dirname(process.execPath), 'python-agent', 'main.py'),
   ];
 

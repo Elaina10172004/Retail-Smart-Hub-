@@ -14,6 +14,14 @@ import { useAuth } from '@/auth/AuthContext';
 import { buildOrderDocument } from '@/lib/documents';
 import { formatCurrency } from '@/lib/format';
 import { Pagination } from '@/components/ui/pagination';
+import {
+  EMPTY_RANGE_FILTER,
+  MultiSelectColumnFilter,
+  RangeColumnFilter,
+  buildColumnFilterOptions,
+  isRangeFilterActive,
+  type RangeFilterValue,
+} from '@/components/ui/table-column-filter';
 import type { PaginatedData } from '@/types/api';
 import {
   CheckCircle2,
@@ -46,6 +54,8 @@ import type {
 } from '@/types/orders';
 
 const PAGE_SIZE = 20;
+const ORDER_STATUS_OPTIONS = ['待发货', '部分发货', '已发货', '已完成', '已取消'] as const;
+const STOCK_STATUS_OPTIONS = ['库存充足', '部分缺货', '待校验', '-'] as const;
 
 function createEmptyItem(seed = Date.now()): OrderItemDraft {
   return {
@@ -89,8 +99,11 @@ export function OrderManagement() {
   const [previewInitialId, setPreviewInitialId] = useState('');
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
-  const [orderDateFilter, setOrderDateFilter] = useState('');
+  const [customerFilter, setCustomerFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [stockStatusFilter, setStockStatusFilter] = useState<string[]>([]);
+  const [orderDateFilter, setOrderDateFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
+  const [amountFilter, setAmountFilter] = useState<RangeFilterValue>(EMPTY_RANGE_FILTER);
   const [currentPage, setCurrentPage] = useState(1);
   const orders = ordersData?.items ?? [];
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -140,18 +153,32 @@ export function OrderManagement() {
     [items],
   );
 
-  // Client-side dropdown filter only (search is server-side)
-  const filteredOrders = useMemo(() => {
-    return orders.filter((order) => {
-      const matchesStatus = !statusFilter || order.status === statusFilter;
-      const matchesDate = !orderDateFilter || order.date === orderDateFilter;
-      return matchesStatus && matchesDate;
-    });
-  }, [orders, orderDateFilter, statusFilter]);
+  const filteredOrders = orders;
+  const customerFilterOptions = useMemo(
+    () => buildColumnFilterOptions([
+      ...formOptions.customers.map((customer) => `${customer.name} / ${customer.channelPreference || '-'}`),
+      ...orders.map((order) => order.customer),
+    ]),
+    [formOptions.customers, orders],
+  );
+  const statusFilterOptions = useMemo(
+    () => ORDER_STATUS_OPTIONS.map((status) => ({ value: status, label: status })),
+    [],
+  );
+  const stockStatusFilterOptions = useMemo(
+    () => STOCK_STATUS_OPTIONS.map((status) => ({ value: status, label: status })),
+    [],
+  );
+  const hasColumnFilters =
+    customerFilter.length > 0 ||
+    statusFilter.length > 0 ||
+    stockStatusFilter.length > 0 ||
+    isRangeFilterActive(orderDateFilter) ||
+    isRangeFilterActive(amountFilter);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, orderDateFilter]);
+  }, [searchTerm, customerFilter, statusFilter, stockStatusFilter, orderDateFilter, amountFilter]);
 
   const loadFormOptions = async () => {
     if (!canCreateOrders) {
@@ -165,7 +192,18 @@ export function OrderManagement() {
   };
 
   const loadOrders = async () => {
-    const pageParams = { page: currentPage, pageSize: PAGE_SIZE, search: searchTerm };
+    const pageParams = {
+      page: currentPage,
+      pageSize: PAGE_SIZE,
+      search: searchTerm,
+      customer: customerFilter.join(',') || undefined,
+      status: statusFilter.join(',') || undefined,
+      stockStatus: stockStatusFilter.join(',') || undefined,
+      dateFrom: orderDateFilter.min,
+      dateTo: orderDateFilter.max,
+      amountMin: amountFilter.min,
+      amountMax: amountFilter.max,
+    };
     if (canCreateOrders) {
       const [ordersResponse] = await Promise.all([
         fetchOrdersPaginated(pageParams),
@@ -194,7 +232,7 @@ export function OrderManagement() {
 
   useEffect(() => {
     void loadPageData();
-  }, [canCreateOrders]);
+  }, [currentPage, canCreateOrders, searchTerm, customerFilter, statusFilter, stockStatusFilter, orderDateFilter, amountFilter]);
 
   const openPreview = (documents: DocumentPreviewRecord[], activeId?: string) => {
     if (documents.length === 0) {
@@ -252,8 +290,11 @@ export function OrderManagement() {
 
   const handleResetFilters = () => {
     setSearchTerm('');
-    setStatusFilter('');
-    setOrderDateFilter('');
+    setCustomerFilter([]);
+    setStatusFilter([]);
+    setStockStatusFilter([]);
+    setOrderDateFilter(EMPTY_RANGE_FILTER);
+    setAmountFilter(EMPTY_RANGE_FILTER);
     setCurrentPage(1);
   };
 
@@ -679,16 +720,7 @@ export function OrderManagement() {
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500" />
               <Input placeholder="搜索订单编号、客户名称..." className="bg-white border-gray-300 pl-9 focus-visible:ring-blue-500" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
             </div>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="">所有状态</option>
-              <option value="待发货">待发货</option>
-              <option value="部分发货">部分发货</option>
-              <option value="已发货">已发货</option>
-              <option value="已完成">已完成</option>
-              <option value="已取消">已取消</option>
-            </select>
-            <Input type="date" value={orderDateFilter} onChange={(event) => setOrderDateFilter(event.target.value)} className="w-full md:w-auto bg-white border-gray-300 focus-visible:ring-blue-500" />
-            <Button variant="outline" className="w-full border-gray-300 text-gray-700 hover:bg-gray-50 md:w-auto" onClick={handleResetFilters}>
+            <Button variant="outline" className="w-full border-gray-300 text-gray-700 hover:bg-gray-50 md:w-auto" onClick={handleResetFilters} disabled={!searchTerm && !hasColumnFilters}>
               重置筛选
             </Button>
           </>
@@ -703,11 +735,21 @@ export function OrderManagement() {
             <TableHeader>
               <TableRow className="bg-gray-50/50 hover:bg-gray-50/50">
                 <TableHead className="font-semibold text-gray-900">订单编号</TableHead>
-                <TableHead className="font-semibold text-gray-900">客户名称</TableHead>
-                <TableHead className="font-semibold text-gray-900">下单日期</TableHead>
-                <TableHead className="font-semibold text-gray-900">订单金额</TableHead>
-                <TableHead className="font-semibold text-gray-900">状态</TableHead>
-                <TableHead className="font-semibold text-gray-900">库存状态</TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <MultiSelectColumnFilter label="客户名称" options={customerFilterOptions} selectedValues={customerFilter} onChange={setCustomerFilter} />
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <RangeColumnFilter label="下单日期" inputType="date" value={orderDateFilter} onChange={setOrderDateFilter} minPlaceholder="开始日期" maxPlaceholder="结束日期" />
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <RangeColumnFilter label="订单金额" value={amountFilter} onChange={setAmountFilter} minPlaceholder="最小金额" maxPlaceholder="最大金额" />
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <MultiSelectColumnFilter label="状态" options={statusFilterOptions} selectedValues={statusFilter} onChange={setStatusFilter} />
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  <MultiSelectColumnFilter label="库存状态" options={stockStatusFilterOptions} selectedValues={stockStatusFilter} onChange={setStockStatusFilter} />
+                </TableHead>
                 <TableHead className="text-right font-semibold text-gray-900">商品件数</TableHead>
                 <TableHead className="text-right font-semibold text-gray-900">操作</TableHead>
               </TableRow>

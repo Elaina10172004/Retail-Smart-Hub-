@@ -30,6 +30,15 @@ interface ParsedFrontmatter {
   enabled?: string;
 }
 
+interface ParsedBodyMetadata {
+  triggers: string[];
+  tools: string[];
+  requiresPermissions: string[];
+  requiresEnv: string[];
+  requiresBins: string[];
+  enabled?: boolean;
+}
+
 export interface SkillDefinition {
   id: string;
   name: string;
@@ -110,6 +119,17 @@ function normalizeListValue(value: string) {
     .filter(Boolean);
 }
 
+function normalizeMetadataLabel(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function splitMetadataValues(value: string) {
+  return value
+    .split(/[,\uFF0C\u3001]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function parseFrontmatter(raw: string) {
   const trimmed = raw.replace(/^\uFEFF/, '');
   if (!trimmed.startsWith('---\n') && !trimmed.startsWith('---\r\n')) {
@@ -175,6 +195,84 @@ function parseFrontmatter(raw: string) {
   }
 
   return { frontmatter, body };
+}
+
+function parseBodyMetadata(rawBody: string) {
+  const lines = rawBody.replace(/\r/g, '').split('\n');
+  const metadata: ParsedBodyMetadata = {
+    triggers: [],
+    tools: [],
+    requiresPermissions: [],
+    requiresEnv: [],
+    requiresBins: [],
+  };
+  const strippedBody: string[] = [];
+  let inMetadataSection = false;
+  let metadataHeadingLevel = 0;
+
+  for (const line of lines) {
+    const headingMatch = line.match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (headingMatch) {
+      const headingLevel = headingMatch[1].length;
+      const headingLabel = normalizeMetadataLabel(headingMatch[2]);
+      const isMetadataHeading =
+        headingLevel === 2 &&
+        ['runtime metadata', 'activation hints', '运行时元数据', '触发提示'].includes(headingLabel);
+
+      if (isMetadataHeading) {
+        inMetadataSection = true;
+        metadataHeadingLevel = headingLevel;
+        continue;
+      }
+
+      if (inMetadataSection && headingLevel <= metadataHeadingLevel) {
+        inMetadataSection = false;
+        metadataHeadingLevel = 0;
+      }
+    }
+
+    if (inMetadataSection) {
+      const itemMatch = line.match(/^\s*[-*]\s*([^:：]+)\s*[:：]\s*(.*?)\s*$/);
+      if (!itemMatch) {
+        continue;
+      }
+
+      const label = normalizeMetadataLabel(itemMatch[1]);
+      const value = itemMatch[2];
+
+      if (['triggers', 'trigger', '触发词', '触发器'].includes(label)) {
+        metadata.triggers.push(...splitMetadataValues(value));
+        continue;
+      }
+      if (['recommended tools', 'tools', '推荐工具', '工具'].includes(label)) {
+        metadata.tools.push(...splitMetadataValues(value));
+        continue;
+      }
+      if (['requires permissions', 'required permissions', '需要权限', '权限'].includes(label)) {
+        metadata.requiresPermissions.push(...splitMetadataValues(value));
+        continue;
+      }
+      if (['requires env', 'required env', '环境变量', '需要环境变量'].includes(label)) {
+        metadata.requiresEnv.push(...splitMetadataValues(value));
+        continue;
+      }
+      if (['requires bins', 'required bins', '依赖命令', '需要命令'].includes(label)) {
+        metadata.requiresBins.push(...splitMetadataValues(value));
+        continue;
+      }
+      if (['enabled', '启用'].includes(label)) {
+        metadata.enabled = resolveBoolean(value, true);
+      }
+      continue;
+    }
+
+    strippedBody.push(line);
+  }
+
+  return {
+    metadata,
+    body: strippedBody.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
+  };
 }
 
 function resolveBoolean(value: string | undefined, fallback: boolean) {
@@ -290,25 +388,44 @@ function loadSkills() {
 
       const raw = fs.readFileSync(skillFile, 'utf8');
       const parsed = parseFrontmatter(raw);
+      const bodyParsed = parseBodyMetadata(parsed.body);
       const skillId = dir.name.toLowerCase();
-      const description = parsed.frontmatter.description?.trim() || parsed.body.split('\n').find(Boolean)?.trim() || 'No description';
-      const triggers = parsed.frontmatter.triggers && parsed.frontmatter.triggers.length > 0 ? parsed.frontmatter.triggers : [skillId];
+      const description =
+        parsed.frontmatter.description?.trim() || bodyParsed.body.split('\n').find(Boolean)?.trim() || 'No description';
+      const triggers =
+        bodyParsed.metadata.triggers.length > 0
+          ? bodyParsed.metadata.triggers
+          : parsed.frontmatter.triggers && parsed.frontmatter.triggers.length > 0
+            ? parsed.frontmatter.triggers
+            : [skillId];
       const skill: SkillDefinition = {
         id: skillId,
         name: parsed.frontmatter.name?.trim() || dir.name,
         description,
         triggers: triggers.map((item) => item.toLowerCase()),
-        tools: (parsed.frontmatter.tools ?? []).map((item) => item.trim()).filter(Boolean),
-        requiresPermissions: parsed.frontmatter.requires_permissions ?? [],
-        requiresEnv: parsed.frontmatter.requires_env ?? [],
-        requiresBins: parsed.frontmatter.requires_bins ?? [],
+        tools:
+          bodyParsed.metadata.tools.length > 0
+            ? bodyParsed.metadata.tools
+            : (parsed.frontmatter.tools ?? []).map((item) => item.trim()).filter(Boolean),
+        requiresPermissions:
+          bodyParsed.metadata.requiresPermissions.length > 0
+            ? bodyParsed.metadata.requiresPermissions
+            : (parsed.frontmatter.requires_permissions ?? []),
+        requiresEnv:
+          bodyParsed.metadata.requiresEnv.length > 0
+            ? bodyParsed.metadata.requiresEnv
+            : (parsed.frontmatter.requires_env ?? []),
+        requiresBins:
+          bodyParsed.metadata.requiresBins.length > 0
+            ? bodyParsed.metadata.requiresBins
+            : (parsed.frontmatter.requires_bins ?? []),
         source: root.source,
         rootPath: root.rootPath,
         skillPath,
         skillFile,
-        body: parsed.body.trim(),
+        body: bodyParsed.body.trim(),
         referenceIndex: readReferenceIndex(skillPath),
-        enabled: resolveBoolean(parsed.frontmatter.enabled, true),
+        enabled: bodyParsed.metadata.enabled ?? resolveBoolean(parsed.frontmatter.enabled, true),
       };
 
       if (!byId.has(skill.id)) {

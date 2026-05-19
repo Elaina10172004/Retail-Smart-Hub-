@@ -1,8 +1,10 @@
 import { apiClient } from '@/services/api/client';
 import type { ApiEnvelope, PaginatedData } from '@/types/api';
+import { type PageQueryParams, pageQuery } from '@/services/api/pagination';
 import type {
   CreateProcurementOrderPayload,
   DeleteProcurementOrderResponse,
+  ForceUpdateProcurementLinesPayload,
   GeneratedPurchaseOrder,
   ProcurementArrivalWorkspaceRecord,
   ProcurementFormOptions,
@@ -13,13 +15,8 @@ import type {
   UpdateProcurementStatusPayload,
 } from '@/types/procurement';
 
-export function fetchProcurementOrders(params?: { page?: number; pageSize?: number; search?: string }) {
-  const qs = new URLSearchParams();
-  if (params?.page) qs.set('page', String(params.page));
-  if (params?.pageSize) qs.set('pageSize', String(params.pageSize));
-  if (params?.search) qs.set('search', params.search);
-  const query = qs.toString();
-  return apiClient.get<ApiEnvelope<PaginatedData<ProcurementOrder>>>(`/procurement${query ? `?${query}` : ''}`);
+export function fetchProcurementOrders(params?: PageQueryParams) {
+  return apiClient.get<ApiEnvelope<PaginatedData<ProcurementOrder>>>(`/procurement${pageQuery(params)}`);
 }
 
 export function fetchProcurementOrderDetail(id: string) {
@@ -52,6 +49,10 @@ export function registerProcurementArrival(id: string, payload: RegisterProcurem
 
 export function updateProcurementStatus(id: string, payload: UpdateProcurementStatusPayload) {
   return apiClient.post<ApiEnvelope<ProcurementOrderDetail | null>>(`/procurement/${id}/status`, payload);
+}
+
+export function forceUpdateProcurementLines(id: string, payload: ForceUpdateProcurementLinesPayload) {
+  return apiClient.post<ApiEnvelope<ProcurementOrderDetail>>(`/procurement/${id}/lines/force`, payload);
 }
 
 export function deleteProcurementOrder(id: string, options?: { aggressive?: boolean }) {

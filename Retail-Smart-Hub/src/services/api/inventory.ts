@@ -1,6 +1,6 @@
 import { apiClient } from '@/services/api/client';
-import type { ApiEnvelope } from '@/types/api';
-import { type MaybePaginated, unwrapPaginatedEnvelope } from '@/services/api/pagination';
+import type { ApiEnvelope, PaginatedData } from '@/types/api';
+import { type MaybePaginated, pageQuery, unwrapPaginatedEnvelope } from '@/services/api/pagination';
 import type {
   InventoryAdjustmentPayload,
   InventoryAlert,
@@ -14,6 +14,16 @@ import type {
 export async function fetchInventoryList() {
   const response = await apiClient.get<ApiEnvelope<MaybePaginated<InventoryItem>>>('/inventory?pageSize=100');
   return unwrapPaginatedEnvelope(response);
+}
+
+export function fetchInventoryListPaginated(params?: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  category?: string;
+  status?: string;
+}) {
+  return apiClient.get<ApiEnvelope<PaginatedData<InventoryItem>>>(`/inventory${pageQuery(params)}`);
 }
 
 export function fetchInventoryDetail(sku: string) {

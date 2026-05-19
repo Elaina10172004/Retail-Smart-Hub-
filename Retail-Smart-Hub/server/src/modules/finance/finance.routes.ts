@@ -35,7 +35,18 @@ financeRouter.get('/overview', requireFinanceRead, (_req, res) => {
 });
 
 financeRouter.get('/receivables', requireFinanceRead, (req, res) => {
-  return ok(res, paginateList(req, () => listReceivables(), { searchFields: ['id', 'orderId', 'customer'] }));
+  return ok(res, paginateList(req, () => listReceivables(), {
+    searchFields: ['id', 'orderId', 'customer'],
+    filters: [
+      { queryKey: 'customer', field: 'customer' },
+      { queryKey: 'status', field: 'status' },
+    ],
+    rangeFilters: [
+      { minKey: 'dueDateFrom', maxKey: 'dueDateTo', field: 'dueDate', type: 'date' },
+      { minKey: 'amountMin', maxKey: 'amountMax', field: 'amountDue', type: 'number' },
+      { minKey: 'remainingMin', maxKey: 'remainingMax', field: 'remainingAmount', type: 'number' },
+    ],
+  }));
 });
 
 financeRouter.get('/receivables/:id', requireFinanceRead, (_req, res) => {
@@ -53,7 +64,18 @@ financeRouter.get('/receipts', requireFinanceRead, (_req, res) => {
 });
 
 financeRouter.get('/payables', requireFinanceRead, (req, res) => {
-  return ok(res, paginateList(req, () => listPayables(), { searchFields: ['id', 'purchaseOrderId', 'supplier'] }));
+  return ok(res, paginateList(req, () => listPayables(), {
+    searchFields: ['id', 'purchaseOrderId', 'supplier'],
+    filters: [
+      { queryKey: 'supplier', field: 'supplier' },
+      { queryKey: 'status', field: 'status' },
+    ],
+    rangeFilters: [
+      { minKey: 'dueDateFrom', maxKey: 'dueDateTo', field: 'dueDate', type: 'date' },
+      { minKey: 'amountMin', maxKey: 'amountMax', field: 'amountDue', type: 'number' },
+      { minKey: 'remainingMin', maxKey: 'remainingMax', field: 'remainingAmount', type: 'number' },
+    ],
+  }));
 });
 
 financeRouter.get('/payables/:id', requireFinanceRead, (_req, res) => {

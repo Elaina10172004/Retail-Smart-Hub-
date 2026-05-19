@@ -9,10 +9,20 @@ cd /d "%~dp0"
 if /I "%~1"=="--help" goto :help
 if /I "%~1"=="-h" goto :help
 if /I "%~1"=="--release" goto :release
+if /I "%~1"=="--prod" goto :prod
 if /I "%~1"=="--dev" goto :dev
 if /I "%~1"=="--check" goto :check
 
-echo [mode] local desktop start
+echo [mode] desktop dev
+call :ensure_deps
+if errorlevel 1 goto :fail
+
+call npm.cmd run desktop:dev
+if errorlevel 1 goto :fail
+exit /b 0
+
+:prod
+echo [mode] local production desktop start
 call :ensure_deps
 if errorlevel 1 goto :fail
 
@@ -138,8 +148,9 @@ exit /b 0
 echo Retail Smart Hub local launcher
 echo.
 echo Usage:
-echo   start.bat            ^(build + start desktop runtime^)
+echo   start.bat            ^(desktop dev mode^)
 echo   start.bat --dev      ^(desktop dev mode^)
+echo   start.bat --prod     ^(build + start local production desktop runtime^)
 echo   start.bat --release  ^(release pipeline^)
 echo   start.bat --check    ^(dependency check only^)
 echo   start.bat --help

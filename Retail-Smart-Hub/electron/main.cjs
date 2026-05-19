@@ -31,6 +31,8 @@ let authTokenFile = '';
 let volatileAuthToken = '';
 let cspRegistered = false;
 let trustedDevOrigin = '';
+const DEV_LOAD_RETRY_DELAY_MS = 1200;
+const DEV_LOAD_RETRY_LIMIT = 20;
 
 try {
   trustedDevOrigin = new URL(startUrl).origin.toLowerCase();
@@ -314,7 +316,7 @@ function registerCsp() {
 
   const csp = [
     "default-src 'self'",
-    isDev ? "script-src 'self' 'unsafe-eval'" : "script-src 'self'",
+    isDev ? "script-src 'self' 'unsafe-eval' 'unsafe-inline'" : "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     `connect-src 'self' ${connectTargets.join(' ')}`,
@@ -436,6 +438,72 @@ function createWindow() {
 
   win.once('ready-to-show', () => {
     win.show();
+  });
+
+  let devLoadRetryCount = 0;
+  let devLoadRetryTimer = null;
+
+  const clearDevLoadRetryTimer = () => {
+    if (devLoadRetryTimer) {
+      clearTimeout(devLoadRetryTimer);
+      devLoadRetryTimer = null;
+    }
+  };
+
+  const scheduleDevReload = (reason) => {
+    if (!isDev || win.isDestroyed()) {
+      return;
+    }
+    if (devLoadRetryCount >= DEV_LOAD_RETRY_LIMIT) {
+      writeDesktopLog(`dev window reload retry limit reached after ${devLoadRetryCount} attempts; last reason=${reason}`);
+      return;
+    }
+    if (devLoadRetryTimer) {
+      return;
+    }
+
+    devLoadRetryCount += 1;
+    writeDesktopLog(`scheduling dev window reload attempt ${devLoadRetryCount}/${DEV_LOAD_RETRY_LIMIT}: ${reason}`);
+    devLoadRetryTimer = setTimeout(() => {
+      devLoadRetryTimer = null;
+      if (win.isDestroyed()) {
+        return;
+      }
+      writeDesktopLog(`retrying dev window load: ${startUrl}`);
+      win.loadURL(startUrl).catch((error) => {
+        writeDesktopLog(`dev window loadURL retry failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, DEV_LOAD_RETRY_DELAY_MS);
+  };
+
+  win.webContents.on('did-start-loading', () => {
+    writeDesktopLog(`window started loading: ${win.webContents.getURL() || startUrl}`);
+  });
+
+  win.webContents.on('did-finish-load', () => {
+    if (!devLoadRetryTimer) {
+      devLoadRetryCount = 0;
+    }
+    writeDesktopLog(`window finished loading: ${win.webContents.getURL() || startUrl}`);
+  });
+
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    writeDesktopLog(`window failed to load: code=${errorCode} url=${validatedURL || startUrl} error=${errorDescription || 'unknown'}`);
+    if (isDev && errorCode === -102) {
+      scheduleDevReload(`code=${errorCode} url=${validatedURL || startUrl} error=${errorDescription || 'unknown'}`);
+    }
+  });
+
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    writeDesktopLog(`renderer console[level=${level}] ${sourceId || 'unknown'}:${line || 0} ${message}`);
+  });
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    writeDesktopLog(`renderer process gone: reason=${details?.reason || 'unknown'} exitCode=${details?.exitCode ?? 'unknown'}`);
+  });
+
+  win.on('closed', () => {
+    clearDevLoadRetryTimer();
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {

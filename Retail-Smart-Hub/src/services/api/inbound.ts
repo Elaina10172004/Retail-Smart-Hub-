@@ -1,10 +1,11 @@
 import { apiClient } from '@/services/api/client';
-import type { ApiEnvelope } from '@/types/api';
-import { type MaybePaginated, unwrapPaginatedEnvelope } from '@/services/api/pagination';
+import type { ApiEnvelope, PaginatedData } from '@/types/api';
+import { type MaybePaginated, type PageQueryParams, pageQuery, unwrapPaginatedEnvelope } from '@/services/api/pagination';
 import type {
   CreateManualInboundPayload,
   CreateManualInboundResult,
   DeleteInboundResponse,
+  ForceUpdateInboundLinesPayload,
   InboundDetailRecord,
   InboundRecord,
   ManualInboundCandidateItem,
@@ -15,6 +16,10 @@ import type {
 export async function fetchInbounds() {
   const response = await apiClient.get<ApiEnvelope<MaybePaginated<InboundRecord>>>('/inbound?pageSize=100');
   return unwrapPaginatedEnvelope(response);
+}
+
+export function fetchInboundsPaginated(params?: PageQueryParams) {
+  return apiClient.get<ApiEnvelope<PaginatedData<InboundRecord>>>(`/inbound${pageQuery(params)}`);
 }
 
 export function fetchManualInboundCreateOptions() {
@@ -31,6 +36,10 @@ export function fetchInboundDetail(id: string) {
 
 export function saveInboundDraft(id: string, payload: SaveInboundDraftPayload) {
   return apiClient.post<ApiEnvelope<InboundDetailRecord>>(`/inbound/${id}/draft`, payload);
+}
+
+export function forceUpdateInboundLines(id: string, payload: ForceUpdateInboundLinesPayload) {
+  return apiClient.post<ApiEnvelope<InboundDetailRecord>>(`/inbound/${id}/lines/force`, payload);
 }
 
 export function confirmInbound(id: string, payload?: SaveInboundDraftPayload) {

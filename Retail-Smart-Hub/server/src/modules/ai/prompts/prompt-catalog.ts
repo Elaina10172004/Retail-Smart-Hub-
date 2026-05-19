@@ -1,11 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 type PromptCatalog = {
   server?: {
     system_prompt_lines?: string[];
   };
 };
+
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 function looksCorrupted(lines: string[]) {
   const merged = lines.join('\n');
@@ -27,7 +30,7 @@ function loadPromptCatalog(): PromptCatalog {
   const candidates = [
     path.resolve(process.cwd(), 'AI_PROMPTS.json'),
     path.resolve(process.cwd(), '..', 'AI_PROMPTS.json'),
-    path.resolve(__dirname, '../../../../../AI_PROMPTS.json'),
+    path.resolve(moduleDir, '../../../../../AI_PROMPTS.json'),
   ];
 
   for (const candidate of candidates) {

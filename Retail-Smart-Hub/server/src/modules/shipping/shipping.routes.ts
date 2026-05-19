@@ -25,7 +25,10 @@ shippingRouter.get('/summary', requirePermission('shipping.dispatch'), (_req, re
 });
 
 shippingRouter.get('/', requirePermission('shipping.dispatch'), (req, res) => {
-  return ok(res, paginateList(req, () => listShipmentDocuments(), { searchFields: ['id', 'customer', 'courier', 'trackingNo'] }));
+  return ok(res, paginateList(req, () => listShipmentDocuments(), {
+    searchFields: ['id', 'customer', 'courier', 'trackingNo'],
+    filters: [{ queryKey: 'status', field: 'status' }],
+  }));
 });
 
 shippingRouter.get('/workbench', requirePermission('shipping.dispatch'), (_req, res) => {

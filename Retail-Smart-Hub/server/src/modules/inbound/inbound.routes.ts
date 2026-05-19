@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { getModuleCatalogEntry } from '../../shared/module-catalog';
-import { requirePermission } from '../../shared/auth';
+import { requirePermission, requireSuperAdmin } from '../../shared/auth';
 import { fail, ok } from '../../shared/response';
 import { paginateList } from '../../shared/paginate';
 import {
   confirmInbound,
   createManualInboundOrders,
   deleteInbound,
+  forceUpdateInboundLines,
   forceUpdateInboundStatus,
   getInboundDetail,
   listManualInboundCandidateItems,
@@ -29,7 +30,17 @@ inboundRouter.get('/summary', requirePermission('procurement.manage'), (_req, re
 });
 
 inboundRouter.get('/', requirePermission('procurement.manage'), (req, res) => {
-  return ok(res, paginateList(req, () => listInbounds(), { searchFields: ['id', 'rcvId', 'supplier', 'warehouse'] }));
+  return ok(res, paginateList(req, () => listInbounds(), {
+    searchFields: ['id', 'rcvId', 'supplier', 'warehouse'],
+    filters: [
+      { queryKey: 'supplier', field: 'supplier' },
+      { queryKey: 'warehouse', field: 'warehouse' },
+      { queryKey: 'status', field: 'status' },
+    ],
+    rangeFilters: [
+      { minKey: 'itemQtyMin', maxKey: 'itemQtyMax', field: 'items', type: 'number' },
+    ],
+  }));
 });
 
 inboundRouter.get('/create-options', requirePermission('procurement.manage'), (_req, res) => {
@@ -66,6 +77,15 @@ inboundRouter.post('/:id/draft', requirePermission('procurement.manage'), (req, 
     return ok(res, inbound, '入库单草稿已保存。');
   } catch (error) {
     return fail(res, 400, error instanceof Error ? error.message : 'Save inbound draft failed');
+  }
+});
+
+inboundRouter.post('/:id/lines/force', requirePermission('procurement.manage'), requireSuperAdmin, (req, res) => {
+  try {
+    const inbound = forceUpdateInboundLines(req.params.id, req.body);
+    return ok(res, inbound, '入库单明细已强制修正。');
+  } catch (error) {
+    return fail(res, 400, error instanceof Error ? error.message : 'Force update inbound lines failed');
   }
 });
 

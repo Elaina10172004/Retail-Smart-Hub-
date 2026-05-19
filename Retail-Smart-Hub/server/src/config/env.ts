@@ -160,7 +160,11 @@ const openaiApiKey = process.env.OPENAI_API_KEY || '';
 const openaiModel = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
 const openaiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
-const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const configuredGeminiBaseModel = (process.env.GEMINI_MODEL || '').trim();
+const configuredGeminiLargeModel = (process.env.GEMINI_LARGE_MODEL || '').trim();
+const geminiModel = configuredGeminiBaseModel || 'gemini-2.5-flash';
+const geminiSmallModel = (process.env.GEMINI_SMALL_MODEL || '').trim() || configuredGeminiBaseModel || 'gemini-2.5-flash';
+const geminiLargeModel = configuredGeminiLargeModel || configuredGeminiBaseModel || 'gemini-2.5-flash';
 const geminiBaseUrl = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
 const tavilyApiKey = process.env.TAVILY_API_KEY || '';
 const tavilyBaseUrl = process.env.TAVILY_BASE_URL || 'https://api.tavily.com';
@@ -177,7 +181,7 @@ const aiSmallApiKey = (
   process.env.AI_SMALL_API_KEY || resolveProviderValue(aiSmallProvider, deepseekApiKey, openaiApiKey, geminiApiKey)
 ).trim();
 const aiSmallModel = (
-  process.env.AI_SMALL_MODEL || resolveProviderValue(aiSmallProvider, deepseekModel, openaiModel, geminiModel)
+  process.env.AI_SMALL_MODEL || resolveProviderValue(aiSmallProvider, deepseekModel, openaiModel, geminiSmallModel)
 ).trim();
 const aiSmallBaseUrl = (
   process.env.AI_SMALL_BASE_URL || resolveProviderValue(aiSmallProvider, deepseekBaseUrl, openaiBaseUrl, geminiBaseUrl)
@@ -186,7 +190,7 @@ const aiLargeApiKey = (
   process.env.AI_LARGE_API_KEY || resolveProviderValue(aiLargeProvider, deepseekApiKey, openaiApiKey, geminiApiKey)
 ).trim();
 const aiLargeModel = (
-  process.env.AI_LARGE_MODEL || resolveProviderValue(aiLargeProvider, deepseekModel, openaiModel, geminiModel)
+  process.env.AI_LARGE_MODEL || resolveProviderValue(aiLargeProvider, deepseekModel, openaiModel, geminiLargeModel)
 ).trim();
 const aiLargeBaseUrl = (
   process.env.AI_LARGE_BASE_URL || resolveProviderValue(aiLargeProvider, deepseekBaseUrl, openaiBaseUrl, geminiBaseUrl)

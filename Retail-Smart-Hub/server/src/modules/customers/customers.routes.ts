@@ -35,7 +35,13 @@ customersRouter.get('/overview', requirePermission('settings.master-data'), (_re
 });
 
 customersRouter.get('/', requirePermission('settings.master-data'), (req, res) => {
-  return ok(res, paginateList(req, () => listCustomers(), { searchFields: ['id', 'name', 'channelPreference', 'contactName', 'phone'] }));
+  return ok(res, paginateList(req, () => listCustomers(), {
+    searchFields: ['id', 'name', 'channelPreference', 'contactName', 'phone'],
+    filters: [
+      { queryKey: 'status', field: 'status' },
+      { queryKey: 'customerType', field: 'customerType' },
+    ],
+  }));
 });
 
 customersRouter.get('/:id', requirePermission('settings.master-data'), (req, res) => {

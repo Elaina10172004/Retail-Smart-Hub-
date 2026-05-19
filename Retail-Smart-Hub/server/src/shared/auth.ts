@@ -1107,6 +1107,21 @@ export function requirePermission(permission: string) {
   };
 }
 
+export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.auth) {
+    return fail(res, 401, 'Authentication required');
+  }
+
+  const isSuperAdmin =
+    req.auth.username === 'admin' ||
+    req.auth.roles.includes('\u7CFB\u7EDF\u7BA1\u7406\u5458');
+  if (!isSuperAdmin) {
+    return fail(res, 403, 'Only admin can force update documents');
+  }
+
+  next();
+}
+
 
 
 

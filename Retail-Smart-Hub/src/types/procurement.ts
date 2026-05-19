@@ -98,6 +98,17 @@ export interface UpdateProcurementStatusPayload {
   status: string;
 }
 
+export interface ForceUpdateProcurementLineItemPayload {
+  itemId: string;
+  orderedQty: number;
+  unitCost: number;
+}
+
+export interface ForceUpdateProcurementLinesPayload {
+  reason?: string;
+  items: ForceUpdateProcurementLineItemPayload[];
+}
+
 export interface DeleteProcurementOrderResponse {
   id: string;
   deleted: boolean;

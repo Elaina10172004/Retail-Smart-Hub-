@@ -251,6 +251,9 @@ class AgentConfig:
         ).rstrip("/")
     )
     gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+    gemini_small_model: str = field(default_factory=lambda: os.getenv("GEMINI_SMALL_MODEL", ""))
+    gemini_large_model: str = field(default_factory=lambda: os.getenv("GEMINI_LARGE_MODEL", ""))
+    gemini_vision_model: str = field(default_factory=lambda: os.getenv("GEMINI_VISION_MODEL", ""))
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     tavily_base_url: str = field(default_factory=lambda: os.getenv("TAVILY_BASE_URL", "https://api.tavily.com").rstrip("/"))
     tavily_api_key: str = field(default_factory=lambda: os.getenv("TAVILY_API_KEY", ""))
@@ -355,7 +358,28 @@ class AgentConfig:
             return "gemini"
         return "deepseek"
 
-    def _resolve_provider_defaults(self, provider: str) -> Dict[str, str]:
+    def _resolve_gemini_model_for_role(self, role: str) -> str:
+        normalized_role = str(role or "large").strip().lower()
+        if normalized_role == "vision":
+            return (
+                (self.gemini_vision_model or "").strip()
+                or (self.gemini_large_model or "").strip()
+                or (self.gemini_model or "").strip()
+                or "gemini-2.5-flash"
+            )
+        if normalized_role == "small":
+            return (
+                (self.gemini_small_model or "").strip()
+                or (self.gemini_model or "").strip()
+                or "gemini-2.5-flash"
+            )
+        return (
+            (self.gemini_large_model or "").strip()
+            or (self.gemini_model or "").strip()
+            or "gemini-2.5-flash"
+        )
+
+    def _resolve_provider_defaults(self, provider: str, role: str = "large") -> Dict[str, str]:
         normalized = str(provider or "").strip().lower()
         if normalized == "openai":
             return {
@@ -369,7 +393,7 @@ class AgentConfig:
             return {
                 "provider": "gemini",
                 "base_url": self.gemini_base_url.rstrip("/"),
-                "model": self.gemini_model,
+                "model": self._resolve_gemini_model_for_role(role),
                 "api_key": self.gemini_api_key,
                 "api_key_env": "GEMINI_API_KEY",
             }
@@ -389,7 +413,7 @@ class AgentConfig:
             # the small profile. This avoids text-only providers hallucinating OCR.
             explicit_provider = (self.vision_provider or "").strip()
             if explicit_provider:
-                defaults = self._resolve_provider_defaults(explicit_provider)
+                defaults = self._resolve_provider_defaults(explicit_provider, "vision")
                 return {
                     "provider": defaults["provider"],
                     "base_url": (self.vision_base_url or defaults["base_url"]).rstrip("/"),
@@ -399,13 +423,13 @@ class AgentConfig:
                     "role": "vision",
                 }
             if (self.gemini_api_key or "").strip():
-                defaults = self._resolve_provider_defaults("gemini")
+                defaults = self._resolve_provider_defaults("gemini", "vision")
                 return {**defaults, "role": "vision"}
             if (self.openai_api_key or "").strip():
-                defaults = self._resolve_provider_defaults("openai")
+                defaults = self._resolve_provider_defaults("openai", "vision")
                 return {**defaults, "role": "vision"}
             if (self.small_provider or "").strip().lower() in {"openai", "gemini"} and (self.small_api_key or "").strip():
-                defaults = self._resolve_provider_defaults(self.small_provider)
+                defaults = self._resolve_provider_defaults(self.small_provider, "vision")
                 return {
                     "provider": defaults["provider"],
                     "base_url": (self.small_base_url or defaults["base_url"]).rstrip("/"),
@@ -415,7 +439,7 @@ class AgentConfig:
                     "role": "vision",
                 }
             if (self.large_provider or "").strip().lower() in {"openai", "gemini"} and (self.large_api_key or "").strip():
-                defaults = self._resolve_provider_defaults(self.large_provider)
+                defaults = self._resolve_provider_defaults(self.large_provider, "vision")
                 return {
                     "provider": defaults["provider"],
                     "base_url": (self.large_base_url or defaults["base_url"]).rstrip("/"),
@@ -426,7 +450,7 @@ class AgentConfig:
                 }
             # If no multimodal key is configured, fail explicitly in the
             # vision call instead of silently using a text-only small model.
-            defaults = self._resolve_provider_defaults("gemini")
+            defaults = self._resolve_provider_defaults("gemini", "vision")
             return {**defaults, "role": "vision"}
         elif role_lower == "small":
             normalized_role = "small"
@@ -434,7 +458,7 @@ class AgentConfig:
             normalized_role = "large"
         if normalized_role == "small":
             provider_raw = self.small_provider or self.provider
-            defaults = self._resolve_provider_defaults(provider_raw)
+            defaults = self._resolve_provider_defaults(provider_raw, "small")
             base_url = (self.small_base_url or "").strip() or defaults["base_url"]
             model = (self.small_model or "").strip() or defaults["model"]
             api_key = (self.small_api_key or "").strip() or defaults["api_key"]
@@ -449,7 +473,7 @@ class AgentConfig:
             }
 
         provider_raw = self.large_provider or self.provider
-        defaults = self._resolve_provider_defaults(provider_raw)
+        defaults = self._resolve_provider_defaults(provider_raw, "large")
         base_url = (self.large_base_url or "").strip() or defaults["base_url"]
         model = (self.large_model or "").strip() or defaults["model"]
         api_key = (self.large_api_key or "").strip() or defaults["api_key"]

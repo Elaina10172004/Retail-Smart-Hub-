@@ -152,7 +152,7 @@ try {
 if (!shuttingDown) {
   startExternalTask('electron', electronCommand, [electronEntry], {
     RETAIL_SMART_HUB_START_URL: 'http://127.0.0.1:3000',
-    RETAIL_SMART_HUB_API_URL: 'http://127.0.0.1:4000',
+    RETAIL_SMART_HUB_API_URL: 'http://127.0.0.1:4000/api',
     RETAIL_SMART_HUB_DEV: 'true',
     ELECTRON_RUN_AS_NODE: null,
   });

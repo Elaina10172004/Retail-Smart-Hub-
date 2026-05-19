@@ -1,6 +1,6 @@
 import { apiClient } from '@/services/api/client';
 import type { ApiEnvelope, PaginatedData } from '@/types/api';
-import { type MaybePaginated, pageQuery, unwrapPaginatedEnvelope } from '@/services/api/pagination';
+import { type MaybePaginated, type PageQueryParams, pageQuery, unwrapPaginatedEnvelope } from '@/services/api/pagination';
 import type {
   CreateOrderPayload,
   DeleteOrderResponse,
@@ -10,13 +10,13 @@ import type {
   UpdateOrderStatusPayload,
 } from '@/types/orders';
 
-export async function fetchOrders(params?: { page?: number; pageSize?: number; search?: string }) {
+export async function fetchOrders(params?: PageQueryParams) {
   const qs = pageQuery(params || { pageSize: 100 });
   const response = await apiClient.get<ApiEnvelope<MaybePaginated<OrderRecord>>>(`/orders${qs}`);
   return unwrapPaginatedEnvelope(response);
 }
 
-export async function fetchOrdersPaginated(params?: { page?: number; pageSize?: number; search?: string }) {
+export async function fetchOrdersPaginated(params?: PageQueryParams) {
   const qs = pageQuery(params || { pageSize: 20 });
   return apiClient.get<ApiEnvelope<PaginatedData<OrderRecord>>>(`/orders${qs}`);
 }
